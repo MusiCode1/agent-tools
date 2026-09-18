@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Openbox pipe menu: installed applications from .desktop files.
+set -euo pipefail
+
+xml_escape() {
+  local s=$1
+  s=${s//&/&amp;}
+  s=${s//</&lt;}
+  s=${s//>/&gt;}
+  s=${s//\"/&quot;}
+  printf '%s' "$s"
+}
+
+desktop_field() {
+  local file=$1 key=$2
+  awk -F= -v key="$key" '
+    $0 == "[Desktop Entry]" { in_entry = 1; next }
+    /^\[/ { in_entry = 0 }
+    in_entry && $1 == key { sub(/^[^=]+=/, ""); print; exit }
+  ' "$file"
+}
+
+should_skip() {
+  local file=$1
+  local hidden nodisplay dtype cats base
+  hidden=$(desktop_field "$file" Hidden)
+  nodisplay=$(desktop_field "$file" NoDisplay)
+  dtype=$(desktop_field "$file" Type)
+  cats=$(desktop_field "$file" Categories)
+  base=$(basename "$file")
+  [[ ${hidden,,} == true ]] && return 0
+  [[ ${nodisplay,,} == true ]] && return 0
+  [[ -n $dtype && ${dtype} != Application ]] && return 0
+  [[ $cats == *Settings* || $cats == *X-XFCE-SettingsDialog* ]] && return 0
+  case $base in
+    xfce4-appfinder.desktop|xfce4-run.desktop|xfce4-panel*.desktop|tint2.desktop|rofi*.desktop)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+exec_command() {
+  local raw=$1
+  raw=${raw%% \%*}
+  raw=${raw//\"/}
+  printf '%s' "$raw"
+}
+
+echo '<openbox_pipe_menu>'
+
+shopt -s nullglob
+files=(/usr/share/applications/*.desktop /usr/local/share/applications/*.desktop)
+declare -A seen=()
+
+sorted=()
+while IFS= read -r line; do
+  [[ -n $line ]] && sorted+=("$line")
+done < <(
+  for file in "${files[@]}"; do
+    should_skip "$file" && continue
+    name=$(desktop_field "$file" Name)
+    [[ -z $name ]] && continue
+    printf '%s\t%s\n' "$name" "$file"
+  done | LC_ALL=C sort -f
+)
+
+for line in "${sorted[@]}"; do
+  name=${line%%$'\t'*}
+  file=${line#*$'\t'}
+  [[ -n ${seen[$name]+x} ]] && continue
+  seen[$name]=1
+  raw=$(desktop_field "$file" Exec)
+  [[ -z $raw ]] && continue
+  cmd=$(exec_command "$raw")
+  [[ -z $cmd ]] && continue
+  printf '  <item label="%s"><action name="Execute"><command>%s</command></action></item>\n' \
+    "$(xml_escape "$name")" \
+    "$(xml_escape "$cmd")"
+done
+
+echo '</openbox_pipe_menu>'

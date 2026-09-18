@@ -1,0 +1,29 @@
+# שדות מותאמים לידע הקנוני — phase2 C3, 2026-09-08.
+# מוזנים ע"י scripts/recoll-md-fields.sh דרך metadatacmds ב-recoll.conf.
+#
+# 🛑 description ו-summary הם שמות תפוסים ב-recoll. שדה מקומי בשם תפוס
+#    נבלע בשקט: מאונדקס, נשמר ריק, בלי שגיאה. לכן rbdesc.
+#    התיעוד מבקש תחילית XY לשדות מקומיים.
+
+[prefixes]
+# [prefixes] נותן יכולת *חיפוש* — זה מה שמפעיל את התחביר kind:runbook.
+# wdfinc מגביר בזמן אינדוקס: מילה מ-rbdesc נספרת כאילו הופיעה 12 פעמים,
+# כך שמשפט ה"מתי להשתמש" שוקל יותר מפסקה אקראית בגוף.
+rbdesc = XYDESC ; wdfinc=12
+tags   = XYTAGS ; wdfinc=8
+kind   = XYKIND
+domain = XYDOM
+env    = XYENV
+tool   = XYTOOL
+# entities: הישויות שהרנבוק נוגע בהן. מאפשר `entities:server-a kind:runbook`
+entities = XYENT ; wdfinc=8
+
+[stored]
+# [stored] נותן יכולת *הצגה* — סעיף נפרד ונדרש. בלעדיו החיפוש עובד
+# ו-`recollq -F` מחזיר שדות ריקים.
+rbdesc =
+kind =
+domain =
+env =
+tool =
+entities =

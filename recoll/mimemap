@@ -1,0 +1,10 @@
+# Treat JSONL session logs as plain text so recollindex reads their content.
+.jsonl = text/plain
+
+# TypeScript source. recoll's default mimemap (/usr/share/recoll/examples/mimemap:231)
+# maps .ts to video/MP2T (MPEG transport stream), so TS source content was never
+# indexed — only the filename. Verified 2026-08-26: searching an identifier defined
+# in 6 .ts files returned 25 hits, all .jsonl/.md/.txt, zero .ts.
+.ts = text/plain
+.mts = text/plain
+.cts = text/plain

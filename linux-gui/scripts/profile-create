@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/lib.sh"
+load_env
+name=${1:?Usage: profile-create NAME}
+validate_profile "$name"
+target="$LINUX_GUI_BROWSER_PROFILES/$name"
+[[ ! -e "$target" ]] || die "Profile already exists: $name"
+install -d -m 0700 "$target"
+install -d -m 0700 "$LINUX_GUI_BROWSER_PROJECTS/$name/runtime"
+install -d -m 0750 "$LINUX_GUI_BROWSER_PROJECTS/$name/artifacts"
+echo "Created profile: $name"

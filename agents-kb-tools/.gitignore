@@ -1,0 +1,4 @@
+# קונפיג חי — הכלים קוראים knowledge.conf (או $KB_ROOT). הדוגמה: knowledge.conf.example
+knowledge.conf
+kb.conf
+__pycache__/

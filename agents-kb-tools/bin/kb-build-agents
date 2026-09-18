@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Rebuild machines/myhost/AGENTS.md from rules/*.md
+# Run after every change under rules/.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+MACHINE="${MACHINE:-$ROOT/memory/machines/myhost}"
+RULES="$MACHINE/rules"
+OUT="$MACHINE/AGENTS.md"
+
+if [[ ! -d "$RULES" ]]; then
+  echo "error: rules dir missing: $RULES" >&2
+  exit 1
+fi
+
+shopt -s nullglob
+mapfile -t files < <(printf '%s\n' "$RULES"/*.md | sort -V)
+if [[ ${#files[@]} -eq 0 ]]; then
+  echo "error: no rules/*.md in $RULES" >&2
+  exit 1
+fi
+
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+
+{
+  cat <<'EOF'
+<!-- GENERATED FILE — do not edit by hand.
+     Sources: memory/machines/myhost/rules/
+              memory/basic-memory/*/wiki/**/rules/  (via scripts/wiki-index.py)
+     After any change under either, run:
+       ~/Projects/agents-config/scripts/build-machine-agents.sh
+-->
+
+EOF
+  first=1
+  for f in "${files[@]}"; do
+    if [[ $first -eq 0 ]]; then
+      printf '\n---\n\n'
+    fi
+    first=0
+    cat "$f"
+    # Ensure file content ends with a newline before the next ---
+    [[ -n "$(tail -c1 "$f")" ]] && printf '\n'
+  done
+
+  # --- רשימת שמות-הישויות (phase4 D3) ---
+  # ‏AGENTS.md **הוא** ההזרקה עבור Codex, opencode ו-CLIs נוספים — הם אינם עוברים
+  # דרך ה-hook. בלי הרשימה כאן, השרשרת "יודע ששם קיים → מחפש" שבורה
+  # אצלם לגמרי, והם היו יוצאים גרועים ממה שהיו לפני phase4.
+  # שורש המופע — לא של הכלי. הכלי חי בריפו נפרד.
+  INST="${KB_ROOT:-$ROOT/knowledge}"
+  ENT="$INST/wiki-entities.md"
+  if [[ -f "$ENT" ]]; then
+    printf '\n---\n\n'
+    cat "$ENT"
+  fi
+
+  # --- חוקי ישות מהוויקי (phase4 D3) ---
+  # ‏Codex, Cursor ו-opencode קוראים את הקובץ הזה ולא עוברים דרך ההוק.
+  # בלי החלק הזה הם מאבדים את חוקי gog/homeassistant/recoll שעברו לוויקי ב-A3 —
+  # רגרסיה שקטה שנוצרה באותו יום.
+  IDX="$(dirname "$(readlink -f "$0")")/kb-wiki-index"
+  if [[ -x "$IDX" ]]; then
+    mapfile -t wr < <({ KB_ROOT="$INST" "$IDX" --rules "$(hostname)" 2>/dev/null
+                        KB_ROOT="$INST" "$IDX" --always 2>/dev/null; } | sort -u)
+    for f in "${wr[@]}"; do
+      [[ -f "$f" ]] || continue
+      printf '\n---\n\n'
+      sed -e '/^---$/,/^---$/d' "$f"
+    done
+    (( ${#wr[@]} )) && printf '\n'
+  fi
+} >"$tmp"
+
+mv "$tmp" "$OUT"
+trap - EXIT
+echo "wrote $OUT ($(wc -l <"$OUT") lines, ${#files[@]} rules + ${#wr[@]} wiki-rules)"

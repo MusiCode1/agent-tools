@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+profile_name=${1:?profile name is required}
+mode=${2:?mode is required}
+url=${3:-about:blank}
+
+if [[ ! "$profile_name" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "Invalid profile name" >&2
+  exit 2
+fi
+if [[ "$mode" != manual && "$mode" != cdp ]]; then
+  echo "Mode must be manual or cdp" >&2
+  exit 2
+fi
+
+profile_dir="/data/browser-profiles/$profile_name"
+runtime_dir="/data/browser-projects/$profile_name/runtime"
+artifacts_dir="/data/browser-projects/$profile_name/artifacts"
+mkdir -p "$profile_dir" "$runtime_dir" "$artifacts_dir"
+chmod 0700 "$profile_dir" "$runtime_dir"
+
+if pgrep -f -- "--user-data-dir=$profile_dir" >/dev/null 2>&1; then
+  echo "Profile '$profile_name' is already used by a Chrome process" >&2
+  exit 3
+fi
+
+if [[ -f "$runtime_dir/pid" ]]; then
+  old_pid=$(<"$runtime_dir/pid")
+  if [[ "$old_pid" =~ ^[0-9]+$ ]] && kill -0 "$old_pid" 2>/dev/null; then
+    echo "Profile '$profile_name' is already open (PID $old_pid)" >&2
+    exit 3
+  fi
+  rm -f "$runtime_dir/pid" "$runtime_dir/mode" "$runtime_dir/cdp-port"
+fi
+
+# Container recreation can leave locks that refer to a PID/hostname which no
+# longer exists. They are safe to remove only after the live-process check.
+rm -f \
+  "$profile_dir/SingletonLock" \
+  "$profile_dir/SingletonCookie" \
+  "$profile_dir/SingletonSocket"
+
+uid=$(id -u)
+export HOME=/config
+export XDG_CONFIG_HOME=/config/.config
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$uid}
+
+chrome_args=(
+  "--user-data-dir=$profile_dir"
+  "--no-first-run"
+  "--no-default-browser-check"
+  "$url"
+)
+
+if [[ -S "$XDG_RUNTIME_DIR/wayland-0" ]]; then
+  export WAYLAND_DISPLAY=wayland-0
+  chrome_args=("--ozone-platform=wayland" "${chrome_args[@]}")
+elif [[ -S "$XDG_RUNTIME_DIR/wayland-1" ]]; then
+  export WAYLAND_DISPLAY=wayland-1
+  chrome_args=("--ozone-platform=wayland" "${chrome_args[@]}")
+else
+  export DISPLAY=${DISPLAY:-:1}
+fi
+
+if [[ "$mode" == cdp ]]; then
+  port=""
+  for candidate in $(seq 9222 9299); do
+    if ! curl -fsS --max-time 0.2 "http://127.0.0.1:$candidate/json/version" >/dev/null 2>&1; then
+      port=$candidate
+      break
+    fi
+  done
+  if [[ -z "$port" ]]; then
+    echo "No free CDP port in 9222-9299" >&2
+    exit 4
+  fi
+  chrome_args=(
+    "--remote-debugging-address=127.0.0.1"
+    "--remote-debugging-port=$port"
+    "${chrome_args[@]}"
+  )
+  printf '%s\n' "$port" >"$runtime_dir/cdp-port"
+fi
+
+nohup google-chrome "${chrome_args[@]}" >"$runtime_dir/chrome.log" 2>&1 &
+pid=$!
+printf '%s\n' "$pid" >"$runtime_dir/pid"
+printf '%s\n' "$mode" >"$runtime_dir/mode"
+
+sleep 2
+if ! kill -0 "$pid" 2>/dev/null; then
+  echo "Chrome failed to start; see $runtime_dir/chrome.log" >&2
+  exit 5
+fi
+
+echo "Profile: $profile_name"
+echo "Mode: $mode"
+echo "PID: $pid"
+if [[ "$mode" == cdp ]]; then
+  echo "CDP: http://127.0.0.1:$port"
+fi

@@ -1,0 +1,7 @@
+# --- ידע קנוני: frontmatter → שדות ניתנים לחיפוש (phase2 C3, 2026-09-08) ---
+# rclmd.py מפרסר את ה-frontmatter ומשתמש רק ב-created/modified/tags. השאר —
+# description, kind, domain, env, tool, name — נטען ונזרק, בלי שגיאה.
+# נמדד: מילה שקיימת אך ורק ב-frontmatter נמצאה ב-1/65 מסמכים.
+# הסעיף מוגבל לתת-עץ, כך שהפקודה רצה על 70 קבצים ולא על כל האינדקס.
+[/home/user/Projects/agents-config/workflows]
+metadatacmds = ; rclmulti1 = /home/user/Projects/agents-config/scripts/recoll-md-fields.sh %f

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/lib.sh"
+load_env
+name=${1:?Usage: browser-close NAME}
+validate_profile "$name"
+require_container
+docker exec --user abc linux-gui linux-gui-browser-close "$name"

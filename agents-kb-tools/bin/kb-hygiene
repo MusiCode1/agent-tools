@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""kb-hygiene — שערי מערכת-הידע. **מנגנון, לא תוכן.**
+
+הכלל: שער שנכשל הוא ממצא. ב-2026-09-08 הוא נכשל שש פעמים ביום אחד,
+וכל כישלון לימד כלל שנצרב כאן:
+
+  · `ראו גם` ו-`תת-ישויות` הם סעיפים מבניים — פטורים מדרישת תאריך
+  · `README.md` ב-history/ הוא תיעוד השכבה, לא רשומה
+  · קובץ בתיקיית `rules/` הוא **מסמך אחד**, לא אוסף מקטעים
+  · מקטע ארוך אינו בהכרח פרוצדורה — הסיגנל הוא 2+ בלוקי קוד
+  · שם ישות שחוזר בשני מקומות = התנגשות
+
+כל הפרמטרים ב-`knowledge.conf`. מופע שני מקבל את הקובץ הזה כמו שהוא.
+המודל: docs/decisions/knowledge-architecture.md
+"""
+from __future__ import annotations
+import pathlib, re, sys, collections
+
+def find_root() -> pathlib.Path:
+    """שורש המופע — התיקייה שמכילה knowledge.conf — גבול מאגר הידע.
+
+    הכלי חי בריפו נפרד (agents-kb-tools) ומופעל על תוכן של מופע אחר.
+    לכן אין לגזור את השורש מ-__file__: מחפשים כלפי מעלה מה-cwd, או
+    מקבלים ב-$KB_ROOT.
+    """
+    import os
+    env = os.environ.get("KB_ROOT")
+    if env:
+        return pathlib.Path(env).resolve()
+    d = pathlib.Path.cwd().resolve()
+    for p in [d, *d.parents]:
+        if (p / "knowledge.conf").exists():
+            return p
+    raise SystemExit("knowledge: לא נמצא knowledge.conf. הריצו מתוך מופע, או הגדירו $KB_ROOT.")
+
+
+ROOT = find_root()
+
+
+def conf() -> dict[str, str]:
+    c: dict[str, str] = {}
+    f = ROOT / "knowledge.conf"
+    if f.exists():
+        for line in f.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                c[k.strip()] = v.strip()
+    return c
+
+
+C = conf()
+WIKI = ROOT / C.get("KB_WIKI", "wiki")
+HIST = ROOT / C.get("KB_HISTORY", "history")
+PAGE_MAX = int(C.get("KB_PAGE_MAX", 12288))
+SEG_MAX = int(C.get("KB_SEGMENT_MAX", 4096))
+SEG_FENCES = int(C.get("KB_SEGMENT_FENCES", 4))
+STRUCTURAL = tuple(x.strip() for x in C.get("KB_STRUCTURAL_SECTIONS", "ראו גם").split(",") if x.strip())
+CATALOG_KINDS = set(x.strip() for x in C.get("KB_CATALOG_KINDS", "").split(",") if x.strip())
+CATALOG_MAX = int(C.get("KB_CATALOG_MAX", 32768))
+# שם תיקיית-החוקים בתוך ישות. היה `rules` קבוע בקוד; המופע השלישי
+# (כספת אישית, עברית) קורא לה `כללים`, וכל חוק שם נשפט כדף-ישות.
+RULES_DIRNAME = C.get("KB_RULES_DIRNAME", "rules")
+NAME_GATE = C.get("KB_NAME_GATE", "off") == "on"
+# מצב השער: fail = חוסם קומיט · warn = מדפיס ויוצא 0.
+#
+# למה זה קיים: מופע חדש נכנס עם קורפוס שנכתב לפני שהיו כללים. במופע
+# השני (team) השער מצא **188 ממצאים** בהרצה הראשונה — 171 מהם מקטעים
+# בלי ⟨תאריך⟩, כי המסמכים פשוט נכתבו בפורמט אחר.
+#
+# 🛑 **שער שנכשל בכל קומיט מכובה תוך יום.** ‏`warn` שומר אותו חי בזמן
+# שמתקנים בהדרגה, ו-`fail` נדלק כשהמספר יורד לאפס.
+GATE_MODE = C.get("KB_GATE_MODE", "fail")
+NAME_LIST = [x.strip() for x in C.get("KB_NAME_LIST", "").split(",") if x.strip()]
+
+problems = 0
+
+
+def fail(msg: str) -> None:
+    global problems
+    problems += 1
+    print(f"  ✗ {msg}", file=sys.stderr)
+
+
+def check_wiki() -> None:
+    titles: dict[str, list[str]] = collections.defaultdict(list)
+    for f in WIKI.rglob("*.md"):
+        rel = f.relative_to(ROOT)
+        body = f.read_text(encoding="utf-8", errors="replace")
+
+        # קובץ בתיקיית rules/ הוא מסמך אחד — נורמה עם נימוק ומבנה,
+        # לא אוסף מקטעים מתוארכים.
+        if f.parent.name == RULES_DIRNAME:
+            continue
+        # README הוא תיעוד של השכבה, לא ישות — בדיוק כמו ב-check_history.
+        # בלי זה כל תיקייה שנייה עם README מייצרת "שם ישות כפול".
+        if f.name == "README.md":
+            continue
+
+        titles[f.stem].append(str(rel))
+
+        # תקרת-דף. `kind:` שנמצא ב-KB_CATALOG_KINDS מקבל תקרה גבוהה יותר.
+        #
+        # 🛑 למה: התקרה נגזרה מ"כמה טענות אפשר להחזיק בראש" ותורגמה לבייטים
+        # לפי חציון מקטע בדפי-ישות. **קטלוג אינו נקרא מקצה לקצה** — קופצים
+        # בו למזהה. ‏`fill-gates/pre-write` הוא 26 שערים עצמאיים; לפצל אותו
+        # שוב היה מסתיר שערים מאחורי חלוקה שרירותית.
+        # התקרה הגבוהה נשארת תקרה — קטלוג שעבר גם אותה באמת דורש פיצול.
+        kind = re.search(r"(?m)^kind:\s*(\S+)", body[:400])
+        cap = CATALOG_MAX if kind and kind.group(1).strip() in CATALOG_KINDS else PAGE_MAX
+        if len(body.encode()) > cap:
+            fail(f"{rel} — {len(body.encode())/1024:.1f}KB > {cap//1024}KB, לפצל לתת-ישויות")
+
+        # תאריך ברמת-הדף — מקטעים יורשים אותו.
+        #
+        # 🛑 למה זה קיים: הכלל "כל מקטע נושא ⟨תאריך⟩" נכתב לדפי-ישות
+        # שנצברים לאורך זמן, שם לכל טענה יש תאריך-מדידה משלה. אבל
+        # **תיעוד משטח הוא מדידה אחת** — סריקת `/attendance` ב-2026-09-01
+        # ייצרה 7 מקטעים מאותה סריקה. לחזור על אותו תאריך 7 פעמים אינו
+        # מוסיף מידע; הוא רעש שמכסה על המקטעים שכן נמדדו ביום אחר.
+        #
+        # לכן: ⟨תאריך⟩ ב-10 השורות הראשונות של הדף פוטר את המקטעים.
+        # מקטע שנמדד ביום אחר עדיין **חייב** ⟨תאריך⟩ משלו — וזו בדיוק
+        # האינפורמציה שהכלל נועד לשמר.
+        head_txt = re.split(r"^### ", body, flags=re.M)[0]
+        # ⚠️ בלי לדלג על ה-frontmatter, תשע שורותיו בולעות את חלון
+        # עשר השורות והעוגן שמיד אחרי הכותרת אינו נספר.
+        head_txt = re.sub(r"\A---\n.*?\n---\n", "", head_txt, flags=re.S)
+        head_lines = [l for l in head_txt.split("\n") if l.strip()][:10]
+        page_dated = "⟨" in "\n".join(head_lines)
+
+        for seg in re.split(r"^### ", body, flags=re.M)[1:]:
+            head = seg.split("\n", 1)[0][:44].strip()
+            if any(head.startswith(x) for x in STRUCTURAL):
+                continue
+            if not page_dated and "⟨" not in "\n".join(seg.split("\n")[1:4]):
+                fail(f"{rel} § {head} — מקטע בלי ⟨תאריך⟩")
+            # גודל לבדו הוא proxy גס: עובדה מפורטת יכולה לעבור את הסף
+            # בלי להיות הליך. הסיגנל המכריע הוא רצף פקודות.
+            fences = seg.count("\n```")
+            if len(seg.encode()) > SEG_MAX and fences >= SEG_FENCES:
+                fail(f"{rel} § {head} — {len(seg.encode())/1024:.1f}KB ו-{fences//2} בלוקי קוד, זה רנבוק")
+
+    for t, paths in titles.items():
+        if len(paths) > 1:
+            fail(f"שם ישות כפול: {t} — {', '.join(paths)}")
+
+
+def check_history() -> None:
+    if not HIST.is_dir():
+        return
+    for f in HIST.rglob("*.md"):
+        if f.name == "README.md":
+            continue          # תיעוד השכבה, לא רשומה
+        head = f.read_text(encoding="utf-8", errors="replace")[:600]
+        rel = f.relative_to(ROOT)
+        if "⟨" not in head:
+            fail(f"{rel} — רשומת היסטוריה בלי ⟨תאריך⟩")
+        if "#" not in head and "[[" not in head:
+            fail(f"{rel} — בלי תגית ובלי [[ישות]]; הנתיב הוא תאריך, לא תימצא")
+
+
+def check_names() -> None:
+    """שער שמות — חוסם שמות אנשים בריפו שנדחף.
+
+    כבוי כאן, **חובה בריפו-צוות**: `git log -S'person_id'` עדיין
+    מחזיר שלושה קומיטים אחרי שהתוכן הועבר. היסטוריית git אינה שוכחת,
+    ולכן זו הטעות היחידה שאין ממנה חזרה.
+    """
+    if not (NAME_GATE and NAME_LIST):
+        return
+    for base in (WIKI, HIST, ROOT / C.get("KB_WORKFLOWS", "workflows")):
+        if not base.is_dir():
+            continue
+        for f in base.rglob("*.md"):
+            body = f.read_text(encoding="utf-8", errors="replace")
+            for n in NAME_LIST:
+                if n in body:
+                    fail(f"{f.relative_to(ROOT)} — שם חסום: {n}")
+
+
+def main() -> int:
+    check_wiki()
+    check_history()
+    check_names()
+    if not problems:
+        print("✅ נקי", file=sys.stderr)
+        return 0
+    mode = "אזהרה" if GATE_MODE == "warn" else "כישלון"
+    print(f"\n{problems} ממצאים ({mode})", file=sys.stderr)
+    return 0 if GATE_MODE == "warn" else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

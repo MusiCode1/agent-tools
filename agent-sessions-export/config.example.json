@@ -1,0 +1,20 @@
+{
+  "machine": "myhost",
+
+  "project_roots": ["/home/user/Projects", "/home/user/projects"],
+  "resolve_symlinks": true,
+
+  "repos": {
+    "technical": "/home/user/Projects/agent-sessions",
+    "work":      "/home/user/Projects/agent-sessions-work",
+    "personal":  "/home/user/Projects/agent-sessions-personal"
+  },
+  "default": "technical",
+
+  "routes": [
+    { "match": "/home/user/Projects/team*",       "repo": "work" },
+    { "match": "/home/user/Projects/project-d*",  "repo": "work" },
+    { "match": "/home/user/Projects/app*",        "repo": "work" },
+    { "match": "/home/user/Projects/project-b*",  "repo": "personal" }
+  ]
+}

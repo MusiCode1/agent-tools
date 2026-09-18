@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/lib.sh"
+load_env
+command=${1:-help}
+shift || true
+
+case "$command" in
+  up)
+    install -d -m 0750 "${LINUX_GUI_CONFIG:?}" "${LINUX_GUI_DOWNLOADS:?}"
+    install -d -m 0700 "${LINUX_GUI_BROWSER_PROFILES:?}" "${LINUX_GUI_BROWSER_PROJECTS:?}"
+    compose up -d "$@"
+    ;;
+  down) compose down "$@" ;;
+  status) compose ps "$@" ;;
+  logs) compose logs -f "$@" ;;
+  shell) require_container; docker exec -it --user abc linux-gui bash ;;
+  profile)
+    sub=${1:-}
+    shift || true
+    case "$sub" in
+      create) exec "$PROJECT_ROOT/scripts/profile-create" "$@" ;;
+      clone) exec "$PROJECT_ROOT/scripts/profile-clone" "$@" ;;
+      list) find "$LINUX_GUI_BROWSER_PROFILES" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort ;;
+      *) die "Usage: linux-gui profile {create|clone|list}" ;;
+    esac
+    ;;
+  browser)
+    sub=${1:-}
+    shift || true
+    case "$sub" in
+      open) exec "$PROJECT_ROOT/scripts/browser-open" "$@" ;;
+      close) exec "$PROJECT_ROOT/scripts/browser-close" "$@" ;;
+      attach) exec "$PROJECT_ROOT/scripts/browser-attach" "$@" ;;
+      *) die "Usage: linux-gui browser {open|close|attach}" ;;
+    esac
+    ;;
+  health) exec "$PROJECT_ROOT/scripts/healthcheck" ;;
+  *)
+    echo "Usage: linux-gui {up|down|status|logs|shell|health|profile|browser}"
+    exit 2
+    ;;
+esac

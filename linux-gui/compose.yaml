@@ -1,0 +1,69 @@
+name: linux-gui
+
+services:
+  webtop:
+    build:
+      context: .
+      args:
+        NODE_VERSION: "22.17.1"
+        PLAYWRIGHT_CLI_VERSION: "0.1.17"
+    container_name: linux-gui
+    restart: unless-stopped
+    shm_size: "2gb"
+    # ─── resource caps (host = 8GB / 2 cores, shared with BE + agents) ───────────
+    # CPU: throttle only → slower rendering, never killed. Leaves headroom for the BE.
+    cpus: 1.5
+    # Memory: hard ceiling 3g, but memswap 5g gives 2g swap → under load the browser
+    # SLOWS via swap instead of OOM-killing Chromium mid-verification. Keep mem_limit
+    # well above shm_size (2g counts against this budget). mem_reservation = soft target.
+    mem_limit: 3g
+    memswap_limit: 5g
+    mem_reservation: 1536m
+    pids_limit: 512
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      PUID: ${PUID:?Set PUID in .env}
+      PGID: ${PGID:?Set PGID in .env}
+      TZ: ${TZ:-Asia/Jerusalem}
+      TITLE: Linux GUI
+      FILE_MANAGER_PATH: /data/downloads
+      START_DOCKER: "false"
+      LC_ALL: en_US.UTF-8
+      LANG: en_US.UTF-8
+      # ─── proxy עם מתג-ניתוק (בדיקות חיבור-מחדש) ──────────────────────────────
+      # ריק כברירת-מחדל ⇒ אפס שינוי התנהגות. להפעלה: LINUX_GUI_PROXY ב-.env,
+      # למשל http://172.16.1.1:4130 (172.16.1.1 = המארח מנקודת-מבט הקונטיינר;
+      # `docker inspect -f '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}'`).
+      # אז `curl localhost:4131/cut` מנתק את כל תעבורת-הקונטיינר בבת אחת.
+      # NO_PROXY חיוני: ה-healthcheck ו-CDP מדברים 127.0.0.1 ואסור שיעברו בפרוקסי.
+      HTTP_PROXY: ${LINUX_GUI_PROXY:-}
+      HTTPS_PROXY: ${LINUX_GUI_PROXY:-}
+      http_proxy: ${LINUX_GUI_PROXY:-}
+      https_proxy: ${LINUX_GUI_PROXY:-}
+      NO_PROXY: localhost,127.0.0.1,::1
+      no_proxy: localhost,127.0.0.1,::1
+    ports:
+      - "127.0.0.1:${LINUX_GUI_PORT:-6080}:3001"
+    volumes:
+      - type: bind
+        source: ${LINUX_GUI_CONFIG:?Set LINUX_GUI_CONFIG in .env}
+        target: /config
+      - type: bind
+        source: ${LINUX_GUI_BROWSER_PROFILES:?Set LINUX_GUI_BROWSER_PROFILES in .env}
+        target: /data/browser-profiles
+      - type: bind
+        source: ${LINUX_GUI_BROWSER_PROJECTS:?Set LINUX_GUI_BROWSER_PROJECTS in .env}
+        target: /data/browser-projects
+      - type: bind
+        source: ${LINUX_GUI_DOWNLOADS:?Set LINUX_GUI_DOWNLOADS in .env}
+        target: /data/downloads
+      - type: bind
+        source: ${LINUX_GUI_WORKSPACE:?Set LINUX_GUI_WORKSPACE in .env}
+        target: /workspace
+    healthcheck:
+      test: ["CMD-SHELL", "curl -ksS https://127.0.0.1:3001/ >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s

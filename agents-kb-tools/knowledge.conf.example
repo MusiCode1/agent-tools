@@ -1,0 +1,50 @@
+# knowledge.conf — פרמטרי מערכת-הידע למופע הזה.
+#
+# המנגנון (הסקריפטים והשערים) אינו יודע דבר על התוכן. כל מה שמבדיל
+# בין מופע למופע יושב כאן. מופע שני — למשל team-docs-repo — מקבל את
+# אותם כלים עם knowledge.conf משלו.
+#
+# המודל המלא: docs/decisions/knowledge-architecture.md
+
+# --- איפה התוכן ---
+# ארבע שכבות הידע. יחסי לשורש הריפו.
+KB_WIKI=wiki
+KB_WORKFLOWS=workflows
+KB_HISTORY=history
+KB_RULES=rules
+
+# --- מה נחשב ישות ---
+# תיקיות-קטגוריה שאינן ישות בעצמן.
+KB_CATEGORIES=machines,services,projects,rules,wiki
+
+# --- שערים ---
+# תקרת דף. נגזרה מהקורפוס: חציון גוף-מקטע 1,077B ⇒ 12KB ≈ 11 מקטעים.
+KB_PAGE_MAX=12288
+# מקטע מעל הסף **ועם** 2+ בלוקי קוד = פרוצדורה, לא עובדה → רנבוק.
+# גודל לבדו אינו מספיק: עובדה מפורטת יכולה לעבור 4KB בלי להיות הליך.
+KB_SEGMENT_MAX=4096
+KB_SEGMENT_FENCES=4
+# מקטע חייב ⟨תאריך⟩. סעיפים מבניים פטורים.
+KB_STRUCTURAL_SECTIONS=ראו גם,תת-ישויות,See also
+
+# --- היקפי הזרקה ---
+# חוקים מוזרקים לפי מיקום: rules/ תחת המכונה הנוכחית או הפרויקט הנוכחי.
+KB_MACHINE_SCOPE=myhost
+# חוקים בסימון `inject: always` מוזרקים תמיד. קטגוריה קטנה במכוון —
+# הקריטריון: הנזק קורה במגע הראשון, לפני שיש סיבה לחפש.
+KB_ALWAYS_MARKER=inject: always
+
+# --- שער שמות ---
+# חוסם שמות אנשים בריפו שנדחף. **כבוי כאן, חובה בריפו-צוות.**
+# הרקע: `git log -S'person_id'` עדיין מחזיר שלושה קומיטים
+# ב-agents-config אחרי שהתוכן הועבר. היסטוריית git אינה שוכחת.
+KB_NAME_GATE=off
+KB_NAME_LIST=
+
+# --- אינדקסים ---
+# מצב השער: fail חוסם קומיט · warn מדפיס ומאפשר.
+# מופע חדש מתחיל ב-warn ועובר ל-fail כשהמספר יורד לאפס.
+KB_GATE_MODE=fail
+
+KB_ENTITIES_OUT=wiki-entities.md
+KB_WORKFLOWS_INDEX=workflows/INDEX.md

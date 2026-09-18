@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/lib.sh"
+load_env
+require_container
+health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' linux-gui)
+[[ "$health" == healthy ]] || die "Container health: $health"
+curl -ksS "https://127.0.0.1:${LINUX_GUI_PORT:-6080}/" >/dev/null
+docker exec linux-gui google-chrome --version
+docker exec linux-gui playwright-cli --version
+echo "linux-gui is healthy"

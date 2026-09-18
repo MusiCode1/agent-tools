@@ -1,0 +1,102 @@
+# Recoll configuration
+# Indexes the Obsidian vault (rclone mount from Google Drive), local projects,
+# and coding-agent session files (text / JSON / JSONL).
+#
+# Refreshed daily at 04:00 by nightly-search-index.timer (Recoll then Cass).
+# Runbook: ~/Projects/agents-config/workflows/runbooks/nightly-search-index.md
+
+topdirs = /path/to/vault /home/user/Projects
+# skippedPaths is matched with fnmatch + FNM_PATHNAME against the full path.
+# Bare directory names do not work here — use skippedNames for those.
+# ‏phase2 C4 (2026-09-08): סשני סוכנים הופרדו לאינדקס משלהם.
+# 25,917 קבצי סשנים מול ~794 מסמכי ידע — יחס 33:1 — ולכן 79.9% מהתוצאות
+# היו ארכיון ו-2.5% הרנבוק המבוקש. שאר המקורות (‏~/.claude, ~/.cursor, …)
+# פשוט אינם ב-topdirs יותר; אלה שתחת ~/Projects חייבים החרגה מפורשת.
+# החיפוש בהם: recollq -c ~/.recoll-sessions
+skippedPaths = /media \
+    /home/user/Projects/agent-sessions \
+    /home/user/Projects/agent-sessions-export \
+    /home/user/Projects/private-sessions \
+    /home/user/Projects/.archive-agent-sessions-work \
+    /home/user/Projects/team-docs-repo/agent-sessions
+skippedNames = .obsidian .smart-env .git .trash node_modules \
+               dist build .next .nuxt .svelte-kit .venv venv target coverage \
+               __pycache__ .cache .worktrees .pytest_cache .ruff_cache \
+               .playwright-cli .specstory .vscode .localappdata \
+               .env .env.local .env.production .env.development *.pem id_rsa \
+               .credentials.json .credentials.*.json auth.json oauth_creds.json \
+               antigravity-oauth-token \
+               *.pyc *.pyo *.o *.a *.so *.so.* *.dll *.dylib *.exe *.class \
+               *.jar *.war *.wasm *.node *.bin *.dat *.img *.iso *.pack *.idx \
+               *.zip *.tar *.gz *.tgz *.bz2 *.xz *.zst *.7z *.rar \
+               *.apk *.aab *.deb *.rpm \
+               *.woff *.woff2 *.ttf *.otf *.eot \
+               *.mp3 *.m4a *.wav *.ogg *.flac *.mp4 *.mkv *.webm *.mov *.avi
+idxfilters =
+
+# Include markdown and plain text (and .json / .jsonl via mimemap)
+indexallfilenames = 1
+
+# Hebrew and other unicode support
+tryutf8totext = 1
+
+# Agent session trees: index only text/JSON session files, not sqlite/binaries/media.
+[/home/user/.claude/projects]
+onlyNames = *.json *.jsonl *.txt *.md
+
+[/home/user/.claude/sessions]
+onlyNames = *.json *.jsonl *.txt *.md
+
+[/home/user/.codex/sessions]
+onlyNames = *.json *.jsonl *.txt *.md
+
+[/home/user/.codex-remote/sessions]
+onlyNames = *.json *.jsonl *.txt *.md
+
+[/home/user/.cursor/projects]
+onlyNames = *.json *.jsonl *.txt *.md
+
+[/home/user/.cursor/chats]
+onlyNames = *.json *.jsonl *.txt *.md
+
+[/home/user/.cursor/acp-sessions]
+onlyNames = *.json *.jsonl *.txt *.md
+
+[/home/user/.cline/data/sessions]
+onlyNames = *.json *.jsonl *.txt *.md
+
+[/home/user/.pi/agent/sessions]
+onlyNames = *.json *.jsonl *.txt *.md
+
+[/home/user/.omp/agent/sessions /home/user/.grok/sessions]
+onlyNames = *.json *.jsonl *.txt *.md
+
+[/home/user/.gemini/antigravity-cli/brain]
+onlyNames = *.json *.jsonl *.txt *.md
+
+[/home/user/.gemini/tmp]
+onlyNames = *.json *.jsonl *.txt *.md
+
+# grok: ~/.grok/sessions/<cwd-url-encoded>/<sid>/updates.jsonl + prompt_history.jsonl
+# ‏downloads/ ו-bundled/ תחת ~/.grok הם בינאריים (470MB) — לא מאונדקסים.
+[/home/user/.grok/sessions]
+onlyNames = *.json *.jsonl *.txt *.md
+
+# --- ידע קנוני: frontmatter → שדות ניתנים לחיפוש (phase2 C3, 2026-09-08) ---
+# rclmd.py מפרסר את ה-frontmatter ומשתמש רק ב-created/modified/tags. השאר —
+# description, kind, domain, env, tool, name — נטען ונזרק, בלי שגיאה.
+# נמדד: מילה שקיימת אך ורק ב-frontmatter נמצאה ב-1/65 מסמכים.
+# הסעיף מוגבל לתת-עץ, כך שהפקודה רצה על 70 קבצים ולא על כל האינדקס.
+[/home/user/Projects/agents-config/knowledge/workflows]
+metadatacmds = ; rclmulti1 = /home/user/Projects/agents-config/scripts/recoll-md-fields.sh %f
+
+# --- מופע שני לדוגמה: מאגר ידע של מופע-צוות (2026-09-08) ---
+# אותו סקריפט חילוץ בדיוק. הוא חי ב-agents-config כי הוא כלי-מכונה
+# ולא תוכן — שני המופעים משתמשים בו כמו שהם משתמשים ב-agents-kb-tools.
+# ‏`knowledge/` בשורש הריפו ולא תחת `app/`: ה-app הוא פרויקט אחד.
+[/home/user/Projects/team-docs-repo/knowledge]
+metadatacmds = ; rclmulti1 = /home/user/Projects/agents-config/scripts/recoll-md-fields.sh %f
+
+# --- הוויקי של המופע הראשון ---
+[/home/user/Projects/agents-config/knowledge/wiki]
+metadatacmds = ; rclmulti1 = /home/user/Projects/agents-config/scripts/recoll-md-fields.sh %f

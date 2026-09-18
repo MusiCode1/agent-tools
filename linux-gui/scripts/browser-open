@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/lib.sh"
+load_env
+
+name=${1:?Usage: browser-open NAME (--manual|--cdp) [--url URL]}
+shift
+validate_profile "$name"
+mode=""
+url=about:blank
+while (($#)); do
+  case "$1" in
+    --manual) mode=manual ;;
+    --cdp) mode=cdp ;;
+    --url)
+      shift
+      (($#)) || die "--url requires a value"
+      url=$1
+      ;;
+    *) die "Unknown argument: $1" ;;
+  esac
+  shift
+done
+[[ -n "$mode" ]] || die "Choose exactly one of --manual or --cdp"
+[[ -d "$LINUX_GUI_BROWSER_PROFILES/$name" ]] || die "Profile does not exist: $name"
+profile_is_running "$name" && die "Profile is already open: $name"
+require_container
+docker exec --user abc linux-gui linux-gui-browser-launch "$name" "$mode" "$url"

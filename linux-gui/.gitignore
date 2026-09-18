@@ -1,0 +1,19 @@
+.env
+.env.*
+!.env.example
+*.log
+*.dmp
+*.dump
+*.core
+core
+core.*
+.DS_Store
+.playwright-cli/
+artifacts/
+runtime/
+
+# Persistent browser state must never enter Git.
+data/
+browser-profiles/
+browser-projects/
+downloads/

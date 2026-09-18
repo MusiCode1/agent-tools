@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# recoll-md-fields.sh — חילוץ frontmatter של Markdown לשדות recoll.
+#
+# למה זה קיים:
+#   המטפל של recoll ב-Markdown (/usr/share/recoll/filters/rclmd.py) מפרסר את
+#   ה-frontmatter, אבל משתמש בו רק ל-created / modified / tags — ופולט את
+#   הגוף שאחריו. `description`, `kind`, `domain`, `env`, `tool` ו-`name`
+#   נטענים לזיכרון ונזרקים, בלי שגיאה ובלי אזהרה.
+#   נמדד 2026-09-08: מילה שקיימת אך ורק ב-frontmatter נמצאת ב-1/65 מסמכים.
+#   עם הסקריפט הזה — 56/65.
+#
+# שימוש (ב-~/.recoll/recoll.conf, בסעיף לפי-תיקייה כדי לא לרוץ על כל הדיסק):
+#   [/home/user/Projects/agents-config/workflows]
+#   metadatacmds = ; rclmulti1 = /home/user/Projects/agents-config/scripts/recoll-md-fields.sh %f
+#
+#   • הנקודה-פסיק ההתחלתית אינה טעות — התיעוד דורש אותה במפורש.
+#   • `rclmulti1` = "הפלט מכיל כמה שדות בפורמט `שם = ערך`". שם שדה רגיל היה
+#     קולט את כל הפלט כערך יחיד.
+#
+# 🛑 `description` ו-`summary` הם שמות תפוסים ב-recoll. שדה מקומי בשם תפוס
+#    נבלע בשקט — מאונדקס, נשמר ריק, בלי שגיאה. לכן המיפוי ל-`rbdesc`.
+#    אימות חובה אחרי כל שינוי קונפיג:  recollq -c ~/.recoll -n 1 -m '<מונח>'
+#
+# מלווה ב-~/.recoll/fields:
+#   [prefixes]                      [stored]
+#   rbdesc = XYDESC ; wdfinc=12     rbdesc =
+#   tags   = XYTAGS ; wdfinc=8      kind =
+#   kind   = XYKIND                 domain =
+#   domain = XYDOM                  env =
+#   env    = XYENV                  tool =
+#   tool   = XYTOOL
+#   ([prefixes] נותן חיפוש · [stored] נותן הצגה — שני סעיפים נפרדים)
+
+set -uo pipefail
+
+f="${1:-}"
+[ -n "$f" ] && [ -f "$f" ] || exit 0
+
+# awk ראשון: מבודד את הבלוק שבין שני קווי ה---
+# awk שני: הופך כל שדה מוכר לשורת `שם = ערך`, מנקה מרכאות וסוגריים מרובעים
+awk '/^---[[:space:]]*$/ { n++; next } n == 1' "$f" | awk '
+  /^(name|description|title|tags|kind|type|domain|env|tool|entities|verified_on):/ {
+    key = $0
+    sub(/:.*$/, "", key)
+    sub(/^[^:]*:[[:space:]]*/, "", $0)
+    gsub(/^["'"'"'\[]|["'"'"'\]]$/, "", $0)
+    if ($0 == "") next
+    # שמות תפוסים ב-recoll → שם מקומי; שדות מדור קודם → הקנוני
+    if (key == "description" || key == "title") key = "rbdesc"
+    if (key == "type") key = "kind"
+    printf "%s = %s\n", key, $0
+  }
+'

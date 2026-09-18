@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/lib.sh"
+load_env
+name=${1:?Usage: browser-attach NAME}
+validate_profile "$name"
+require_container
+port_file="$LINUX_GUI_BROWSER_PROJECTS/$name/runtime/cdp-port"
+[[ -f "$port_file" ]] || die "Profile is not running in CDP mode: $name"
+port=$(<"$port_file")
+[[ "$port" =~ ^92[2-9][0-9]$ ]] || die "Invalid recorded CDP port"
+docker exec --user abc --workdir "/data/browser-projects/$name" linux-gui \
+  playwright-cli attach --cdp="http://127.0.0.1:$port"

@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""Generate the workflow index by reading ONLY YAML frontmatter.
+
+Recursively scans workflows/**/*.md, reads just the frontmatter block
+(stops at the closing '---') of each file, and writes a generated
+markdown index to workflows/INDEX.md. The index file itself is always
+excluded from the scan (by filename, regardless of location), and any
+file without a valid, closed frontmatter block is skipped with a
+warning on stderr instead of being turned into a name-only stub entry.
+
+Usage:
+  ./list-workflows.py            # (re)generate workflows/INDEX.md
+  ./list-workflows.py --json     # machine-readable listing, stdout only
+  ./list-workflows.py --names    # names only, stdout only
+"""
+from __future__ import annotations
+import json
+import sys
+import pathlib
+from pathlib import Path
+
+def find_root() -> Path:
+    """שורש המופע — התיקייה שמכילה knowledge.conf — גבול מאגר הידע.
+
+    הכלי חי בריפו נפרד (agents-kb-tools) ומופעל על תוכן של מופע אחר.
+    לכן אין לגזור את השורש מ-__file__: מחפשים כלפי מעלה מה-cwd, או
+    מקבלים ב-$KB_ROOT.
+    """
+    import os
+    env = os.environ.get("KB_ROOT")
+    if env:
+        return Path(env).resolve()
+    d = Path.cwd().resolve()
+    for p in [d, *d.parents]:
+        if (p / "knowledge.conf").exists():
+            return p
+    raise SystemExit("knowledge: לא נמצא knowledge.conf. הריצו מתוך מופע, או הגדירו $KB_ROOT.")
+
+
+ROOT = find_root()
+
+
+def conf(root: Path) -> dict[str, str]:
+    """knowledge.conf — כל מה שמבדיל בין מופע למופע. המנגנון לא מכיר תוכן."""
+    c: dict[str, str] = {}
+    f = root / "knowledge.conf"
+    if f.exists():
+        for line in f.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            c[k.strip()] = v.strip()
+    return c
+
+
+CONF = conf(ROOT)
+WORKFLOWS_DIR = ROOT / CONF.get("KB_WORKFLOWS", "workflows")
+INDEX_FILENAME = Path(CONF.get("KB_WORKFLOWS_INDEX", "workflows/INDEX.md")).name
+INDEX_PATH = WORKFLOWS_DIR / INDEX_FILENAME
+
+
+def read_frontmatter(path: Path) -> dict | None:
+    """Read the frontmatter block (between the first two '---' lines).
+
+    Returns None if the file has no frontmatter, the frontmatter block is
+    never closed, or the YAML doesn't parse to a mapping — callers should
+    skip such files rather than fabricate an entry from the filename.
+    """
+    with path.open("r", encoding="utf-8") as fh:
+        first = fh.readline()
+        if first.strip() != "---":
+            return None
+        lines: list[str] = []
+        closed = False
+        for line in fh:                      # stop as soon as frontmatter ends
+            if line.strip() == "---":
+                closed = True
+                break
+            lines.append(line.rstrip("\n"))
+    if not closed:
+        return None
+    try:
+        import yaml  # type: ignore
+        data = yaml.safe_load("\n".join(lines))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+# Controlled vocabulary. Phase 1 defined these axes; nothing enforced them, so
+# `domain` drifted from the 6 planned values to 29 (20 of them used exactly once,
+# plus `network`/`networking` as a split). Warn-only for now — the values below
+# are the ones actually in use after the phase 2 C1 cleanup, so a NEW value is a
+# deliberate decision, not a typo that slipped through.
+# `redirect` is the team-boundary stub kind from rules/130-runbooks.md: the body
+# stays in team-docs-repo, only the pointer lives here.
+# 🛑 אוצר-מילים הוא **תוכן**, לא מנגנון. המופע השני (צוות) מחזיק
+# `kind: flow` — מדרך רב-שלבי שאינו רנבוק — והכלי הכריז עליו סטייה בארבעה
+# קבצים תקינים. ‏`KB_KINDS` ב-knowledge.conf גובר; זו ברירת המחדל בלבד.
+KNOWN_KIND = set(x.strip() for x in CONF.get(
+    "KB_KINDS", "runbook,diagnostic,redirect").split(",") if x.strip())
+REQUIRED_FIELDS = ("name", "description", "tags", "kind", "domain", "env", "tool")
+# Fields an agent invented on its own in Aug 2026, three weeks after phase 1 set
+# the schema. They have no mapping in recoll and silently return nothing for a
+# `kind:` query, which is exactly the failure that is hard to notice.
+LEGACY_FIELDS = {"type": "kind", "title": "name"}
+
+
+def lint_frontmatter(md: Path, fm: dict) -> None:
+    """Warn on schema drift. Never fails the build — see module docstring."""
+    rel = md.relative_to(WORKFLOWS_DIR).as_posix()
+    for old, new in LEGACY_FIELDS.items():
+        if old in fm:
+            print(f"list-workflows: {rel}: `{old}:` is not indexed — use `{new}:`",
+                  file=sys.stderr)
+    missing = [f for f in REQUIRED_FIELDS if f not in fm]
+    if missing:
+        print(f"list-workflows: {rel}: missing {', '.join(missing)}", file=sys.stderr)
+    kind = fm.get("kind")
+    if kind and kind not in KNOWN_KIND:
+        print(f"list-workflows: {rel}: kind `{kind}` outside {sorted(KNOWN_KIND)}",
+              file=sys.stderr)
+
+
+def collect() -> list[dict]:
+    if not WORKFLOWS_DIR.is_dir():
+        return []
+    out = []
+    for md in sorted(WORKFLOWS_DIR.rglob("*.md")):
+        if md.name == INDEX_FILENAME:
+            continue  # never index the generated index itself, wherever it lives
+        fm = read_frontmatter(md)
+        if fm is None:
+            print(f"list-workflows: skipping {md} (no valid frontmatter)", file=sys.stderr)
+            continue
+        lint_frontmatter(md, fm)
+        out.append({
+            "name": fm.get("name") or md.stem,
+            "description": str(fm.get("description", "")).strip(),
+            "kind": fm.get("kind", ""),
+            "tags": fm.get("tags", []),
+            # as_posix(), not str(): on Windows str() emits backslashes, so every
+            # commit from a Windows box rewrites every path line and collides with
+            # commits made on Linux.
+            "path": md.relative_to(WORKFLOWS_DIR).as_posix(),
+        })
+    return out
+
+
+def render_index(items: list[dict]) -> str:
+    lines = [
+        "# Workflow Index",
+        "",
+        "> Auto-generated by `list-workflows.py`. Do not edit by hand — run",
+        "> `./list-workflows.py` to regenerate (also runs via the pre-commit",
+        "> hook, see `hooks/pre-commit`).",
+        "",
+    ]
+    for it in items:
+        lines.append(f"## {it['name']}")
+        lines.append("")
+        if it["description"]:
+            lines.append(it["description"])
+            lines.append("")
+        lines.append(f"- kind: `{it['kind']}`" if it["kind"] else "- kind: _(none)_")
+        tags = it["tags"] if isinstance(it["tags"], list) else ([it["tags"]] if it["tags"] else [])
+        lines.append(f"- tags: {', '.join(str(t) for t in tags) if tags else '_(none)_'}")
+        lines.append(f"- path: `{it['path']}`")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_index(items: list[dict]) -> None:
+    INDEX_PATH.write_text(render_index(items), encoding="utf-8")
+
+
+def main(argv: list[str]) -> int:
+    items = collect()
+    if "--json" in argv:
+        print(json.dumps(items, ensure_ascii=False, indent=2))
+        return 0
+    if "--names" in argv:
+        for it in items:
+            print(it["name"])
+        return 0
+    if not items:
+        print("No workflows found in", WORKFLOWS_DIR, file=sys.stderr)
+        return 1
+    write_index(items)
+    print(f"Wrote {INDEX_PATH} ({len(items)} workflow(s))")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

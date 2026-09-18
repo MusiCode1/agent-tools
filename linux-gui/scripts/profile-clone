@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/lib.sh"
+load_env
+source_name=${1:?Usage: profile-clone SOURCE TARGET}
+target_name=${2:?Usage: profile-clone SOURCE TARGET}
+validate_profile "$source_name"
+validate_profile "$target_name"
+source_dir="$LINUX_GUI_BROWSER_PROFILES/$source_name"
+target_dir="$LINUX_GUI_BROWSER_PROFILES/$target_name"
+[[ -d "$source_dir" ]] || die "Source profile does not exist: $source_name"
+[[ ! -e "$target_dir" ]] || die "Target profile already exists: $target_name"
+profile_is_running "$source_name" && die "Source profile is open: $source_name"
+cp -a "$source_dir" "$target_dir"
+find "$target_dir" -maxdepth 2 \( -type f -o -type l \) \
+  \( -name 'SingletonLock' -o -name 'SingletonCookie' -o -name 'SingletonSocket' \) -delete
+install -d -m 0700 "$LINUX_GUI_BROWSER_PROJECTS/$target_name/runtime"
+install -d -m 0750 "$LINUX_GUI_BROWSER_PROJECTS/$target_name/artifacts"
+echo "Cloned profile: $source_name -> $target_name"

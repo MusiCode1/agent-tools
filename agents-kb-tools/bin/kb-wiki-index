@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""wiki-index.py — מייצר את רשימת שמות-הישויות שמוזרקת בפתיחת סשן.
+
+למה מחולל ולא `recent_activity`:
+  ההוק השתמש ב-`recent_activity`, שמחזיר הכל לפי עדכניות ו**אינו מסנן
+  לפי `note_type`**. ברגע שחוקים ודפי-ישות חיים באותו פרויקט הם
+  מתערבבים — 46 ישויות + 40 פתקים אחרים הוזרקו מעורבבים.
+
+מה שמוזרק הוא **שמות בלבד**, לא תוכן:
+  המבחן אינו "כמה זה חשוב" אלא "האם סוכן יֵדע לחפש את זה" — ולזה מספיק
+  שם. ~50 שמות ≈ 300 טוקנים מול 8,541 של שכבת החוקים.
+
+  ‏154 קריאות AskUserQuestion נמדדו בסשנים החיים, ואחת מהן:
+  "איך מתחברים לשרת מרוחק מסוים? אין לי כתובת, משתמש או מפתח."
+  חיפוש טוב יותר לא היה מונע את זה. ידיעה שהישות קיימת — כן.
+"""
+from __future__ import annotations
+import sys, pathlib, collections
+
+def find_root() -> pathlib.Path:
+    """שורש המופע — התיקייה שמכילה knowledge.conf — גבול מאגר הידע.
+
+    הכלי חי בריפו נפרד (agents-kb-tools) ומופעל על תוכן של מופע אחר.
+    לכן אין לגזור את השורש מ-__file__: מחפשים כלפי מעלה מה-cwd, או
+    מקבלים ב-$KB_ROOT.
+    """
+    import os
+    env = os.environ.get("KB_ROOT")
+    if env:
+        return pathlib.Path(env).resolve()
+    d = pathlib.Path.cwd().resolve()
+    for p in [d, *d.parents]:
+        if (p / "knowledge.conf").exists():
+            return p
+    raise SystemExit("knowledge: לא נמצא knowledge.conf. הריצו מתוך מופע, או הגדירו $KB_ROOT.")
+
+
+ROOT = find_root()
+
+
+def conf(root: pathlib.Path) -> dict[str, str]:
+    """קורא knowledge.conf — כל מה שמבדיל בין מופע למופע.
+
+    המנגנון אינו יודע דבר על התוכן. מופע שני מקבל את אותם כלים עם
+    knowledge.conf משלו. ראו docs/decisions/knowledge-architecture.md
+    """
+    c: dict[str, str] = {}
+    f = root / "knowledge.conf"
+    if f.exists():
+        for line in f.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            c[k.strip()] = v.strip()
+    return c
+
+
+CONF = conf(ROOT)
+WIKI = ROOT / CONF.get("KB_WIKI", "wiki")
+OUT = ROOT / CONF.get("KB_ENTITIES_OUT", "wiki-entities.md")
+CATS = set(CONF.get("KB_CATEGORIES", "machines,services,projects,rules,wiki").split(","))
+ALWAYS = CONF.get("KB_ALWAYS_MARKER", "inject: always")
+# שם תיקיית-החוקים **בתוך ישות**. היה קבוע `rules` בקוד, והמופע השלישי
+# (כספת אישית, עברית) קורא לה `כללים` — כלומר אף חוק לא נמצא.
+RULES_DIRNAME = CONF.get("KB_RULES_DIRNAME", "rules")
+# תצוגת-עץ ב-ישויות.md (במקום קיבוץ שטוח לפי קטגוריה). ברירת-מחדל שטוח,
+# כדי לא לשנות מופעים שלא ביקשו — הכלי משותף. מופע שרוצה עץ: KB_INDEX_TREE=1.
+INDEX_TREE = CONF.get("KB_INDEX_TREE", "").strip().lower() in ("1", "true", "yes")
+# שכבת החוקים העליונה — נתיב, לא שם. חוקים גלובליים חיים שם ולא בתוך ישות.
+RULES_LAYER = ROOT / CONF["KB_RULES"] if CONF.get("KB_RULES") else None
+
+
+def collect() -> list[tuple[str, ...]]:
+    """ישות = תיקייה שמכילה <שם>.md. מחזיר את **נתיב-החלקים** של כל ישות
+    (לא רק שם), כדי ש-render יוכל לבנות עץ היררכי במקום קיבוץ שטוח לפי
+    הקטגוריה העליונה בלבד. תיקיית-החוקים אינה ישות."""
+    ents: list[tuple[str, ...]] = []
+    for d in sorted(WIKI.rglob("*")):
+        if not d.is_dir() or d.name in CATS or d.name == RULES_DIRNAME:
+            continue
+        if not (d / f"{d.name}.md").exists():
+            continue
+        ents.append(d.relative_to(WIKI).parts)
+    return ents
+
+
+def rules_for(scope: str) -> list[pathlib.Path]:
+    """חוקים בהיקף-סשן: של המכונה הנוכחית ושל הפרויקט הנוכחי.
+
+    חוק בתיקיית `rules/` **בתוך** תיקיית ישות. ההיקף נגזר מהמיקום:
+    ‏`wiki/machines/<כאן>/rules/` ו-`wiki/projects/<cwd>/rules/` מוזרקים;
+    ‏`wiki/services/<אחר>/rules/` נמצא בחיפוש בלבד.
+    """
+    out = []
+    for d in WIKI.rglob(RULES_DIRNAME):
+        if d.is_dir() and d.parent.name == scope:
+            out += sorted(d.glob("*.md"))
+    return out
+
+
+def always_rules() -> list[pathlib.Path]:
+    """חוקי-ישות שמסומנים `inject: always` — מוזרקים בלי קשר להקשר.
+
+    קטגוריה **קטנה במכוון**. הקריטריון: הנזק קורה במגע הראשון, לפני
+    שיש סיבה לחפש. `gog` הוא המקרה — כתיבה לחשבון הלא-נכון יוצאת לאדם
+    אמיתי, ואין ממנה חזרה. כשל שעולה פקודה נכשלת אינו מצדיק את זה.
+    """
+    out = []
+    seen = set()
+    pools = [WIKI.rglob(f"{RULES_DIRNAME}/*.md")]
+    if RULES_LAYER and RULES_LAYER.is_dir():
+        pools.append(RULES_LAYER.glob("*.md"))    # שכבת החוקים העליונה
+    for pool in pools:
+        for f in pool:
+            if f in seen:
+                continue
+            seen.add(f)
+            head = f.read_text(encoding="utf-8", errors="replace")[:400]
+            if ALWAYS in head:
+                out.append(f)
+    return sorted(out)
+
+
+HEADER = ["## ישויות ידועות", "",
+          "*מה קיים, לא מה נכון. לפרטים: `recollq -c ~/.recoll '<שם>'`*", ""]
+
+
+def render_flat(entities) -> str:
+    """הפורמט המקורי: שורה לכל קטגוריה, שמות מופרדים בנקודה. ישות-הורה
+    מסומנת ב-(N) לפי מספר ילדיה. ברירת-המחדל, לתאימות עם מופעים קיימים."""
+    kids = collections.Counter(p[:-1] for p in entities)
+    groups: dict[str, list[str]] = collections.defaultdict(list)
+    for parts in entities:
+        grp = parts[0] if len(parts) > 1 else "wiki"
+        k = kids.get(parts, 0)
+        groups[grp].append(f"{parts[-1]}({k})" if k else parts[-1])
+    out = list(HEADER)
+    for grp, names in sorted(groups.items()):
+        out.append(f"**{grp}** · " + " · ".join(sorted(set(names))))
+    out.append("")
+    return "\n".join(out)
+
+
+def render_tree(entities) -> str:
+    """עץ מוזח לפי היררכיית התיקיות. הקטגוריה העליונה (אנשים/דברים) היא
+    כותרת; מתחתיה נגזר העץ מכל שאר חלקי-הנתיב. ישות שהיא גם הורה (למשל
+    `משפחה`) מופיעה עם ילדיה מוזחים תחתיה — כך הסוכן לומד את הקשר."""
+    out = list(HEADER)
+    out[2] = "*מה קיים, לא מה נכון. העץ = היררכיית התיקיות. לפרטים: `recollq -c ~/.recoll '<שם>'`*"
+
+    def tree():
+        return collections.defaultdict(tree)
+
+    roots = collections.defaultdict(tree)
+    for parts in entities:
+        cat = parts[0] if len(parts) > 1 else "wiki"
+        rest = parts[1:] if len(parts) > 1 else parts
+        node = roots[cat]
+        for p in rest:
+            node = node[p]
+
+    def walk(node, depth, acc):
+        for name in sorted(node):
+            acc.append("  " * depth + f"- {name}")
+            walk(node[name], depth + 1, acc)
+
+    for cat in sorted(roots):
+        out.append(f"**{cat}**")
+        walk(roots[cat], 0, out)
+        out.append("")
+    return "\n".join(out)
+
+
+def render(entities) -> str:
+    return render_tree(entities) if INDEX_TREE else render_flat(entities)
+
+
+def main(argv):
+    if "--always" in argv:
+        for f in always_rules():
+            print(f)
+        return 0
+    if "--rules" in argv:
+        scope = argv[argv.index("--rules") + 1]
+        for f in rules_for(scope):
+            print(f)
+        return 0
+    g = collect()
+    txt = render(g)
+    if "--stdout" in argv:
+        print(txt)
+        return 0
+    OUT.write_text(txt, encoding="utf-8")
+    n = len(g)
+    print(f"wiki-index: {n} ישויות · {len(txt)} bytes ≈ {len(txt)//4} טוקנים → {OUT.name}",
+          file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

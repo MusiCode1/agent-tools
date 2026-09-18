@@ -1,0 +1,4 @@
+interface:
+  display_name: "Linux GUI"
+  short_description: "Operate the persistent Linux GUI safely"
+  default_prompt: "Use $linux-gui to operate the persistent GUI and its browser profiles safely."

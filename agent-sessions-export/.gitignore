@@ -1,0 +1,6 @@
+# קונפיג חי — הדוגמה: config.example.json
+config.json
+
+node_modules/
+dist/
+*.log

@@ -1,0 +1,60 @@
+# Minimal Openbox taskbar for linux-gui.
+# Task buttons + tray + clock. Do not start xfce4-panel here.
+
+# Background 1 — panel
+rounded = 0
+border_width = 0
+background_color = #263238 100
+border_color = #37474F 100
+
+# Background 2 — idle task
+rounded = 3
+border_width = 0
+background_color = #37474F 80
+border_color = #37474F 80
+
+# Background 3 — active task
+rounded = 3
+border_width = 0
+background_color = #546E7A 100
+border_color = #546E7A 100
+
+panel_items = TSC
+panel_size = 100% 28
+panel_margin = 0 0
+panel_padding = 4 2 4
+panel_background_id = 1
+panel_position = bottom center horizontal
+panel_layer = top
+panel_monitor = all
+autohide = 0
+wm_menu = 1
+font_shadow = 0
+
+taskbar_mode = single_desktop
+taskbar_hide_if_empty = 0
+taskbar_name = 0
+taskbar_padding = 0 0 2
+
+task_icon = 1
+task_text = 1
+task_centered = 0
+task_maximum_size = 180 28
+task_padding = 4 2 4
+task_font = sans 9
+task_font_color = #CFD8DC 100
+task_active_font_color = #ECEFF1 100
+task_background_id = 2
+task_active_background_id = 3
+
+mouse_left = toggle_iconify
+mouse_middle = none
+mouse_right = close
+
+systray_padding = 0 0 4
+systray_icon_size = 16
+
+time1_format = %H:%M
+time1_font = sans 9
+clock_font_color = #ECEFF1 100
+clock_padding = 8 0
