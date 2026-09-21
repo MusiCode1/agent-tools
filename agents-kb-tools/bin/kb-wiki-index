@@ -91,10 +91,17 @@ def rules_for(scope: str) -> list[pathlib.Path]:
     חוק בתיקיית `rules/` **בתוך** תיקיית ישות. ההיקף נגזר מהמיקום:
     ‏`wiki/machines/<כאן>/rules/` ו-`wiki/projects/<cwd>/rules/` מוזרקים;
     ‏`wiki/services/<אחר>/rules/` נמצא בחיפוש בלבד.
+
+    ה-scope נבדק מול **כל** מרכיבי הנתיב ולא מול ההורה הישיר בלבד. היה
+    `d.parent.name == scope`, ואז כלל מקונן רמה אחת עמוק מדי נפל בשקט:
+    ‏`projects/drive-coding/preview/rules/` דרש scope `preview`, שלעולם
+    אינו מועבר — כלומר כלל על drive-coding לא הוזרק אפילו בסשן drive-coding.
+    נמדד על 45 scopes אמיתיים (44 פרויקטים + hostname): זה המקרה **היחיד**
+    שמשתנה, ואין התאמה היקפית.
     """
     out = []
     for d in WIKI.rglob(RULES_DIRNAME):
-        if d.is_dir() and d.parent.name == scope:
+        if d.is_dir() and scope in d.relative_to(WIKI).parts:
             out += sorted(d.glob("*.md"))
     return out
 
