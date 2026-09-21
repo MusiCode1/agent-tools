@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Rebuild machines/myhost/AGENTS.md from rules/*.md
+# Rebuild machines/<hostname>/AGENTS.md from rules/*.md
 # Run after every change under rules/.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MACHINE="${MACHINE:-$ROOT/memory/machines/myhost}"
+MACHINE="${MACHINE:-$ROOT/memory/machines/$(hostname)}"
 RULES="$MACHINE/rules"
 OUT="$MACHINE/AGENTS.md"
 
@@ -26,7 +26,7 @@ trap 'rm -f "$tmp"' EXIT
 {
   cat <<'EOF'
 <!-- GENERATED FILE — do not edit by hand.
-     Sources: memory/machines/myhost/rules/
+     Sources: memory/machines/<hostname>/rules/
               memory/basic-memory/*/wiki/**/rules/  (via scripts/wiki-index.py)
      After any change under either, run:
        ~/Projects/agents-config/scripts/build-machine-agents.sh
