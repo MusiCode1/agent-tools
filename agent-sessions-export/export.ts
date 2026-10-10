@@ -36,8 +36,11 @@ const APPLY = process.argv.includes("--apply");
 const OUT_RAW = process.argv.find((a) => a.startsWith("--out="))?.split("=")[1] ?? "both";
 if (!["files", "db", "both"].includes(OUT_RAW)) die(`--out לא חוקי: ${OUT_RAW} (files|db|both)`);
 const OUT = OUT_RAW as "files" | "db" | "both";
-const WANT_FILES = OUT !== "db";
-const WANT_DB = OUT !== "files";
+/** מאכלס את ה-DB מהמקורות החיים, בלי לכתוב קבצים ובלי דילוגי-"כבר קיים".
+ *  נחוץ כי השדות החדשים (extra/heavy/usage) חיים ב-raw ולא בארכיון. */
+const DB_BACKFILL = process.argv.includes("--db-backfill");
+const WANT_FILES = DB_BACKFILL ? false : OUT !== "db";
+const WANT_DB = DB_BACKFILL ? true : OUT !== "files";
 const SESSIONS_DB_PATH =
   process.argv.find((a) => a.startsWith("--db-path="))?.split("=")[1] ??
   join(HOME, ".cache", "agent-sessions", "sessions.db");
@@ -219,7 +222,7 @@ for (const c of convs) {
   const mdPath = join(mdDir, base + ".md");
 
   const msgs = msgStmt.all(c.id) as any[];
-  if (existsSync(jsonPath) && isCurrent(jsonPath, msgs.length)) { alreadyDone++; continue; }
+  if (!DB_BACKFILL && existsSync(jsonPath) && isCurrent(jsonPath, msgs.length)) { alreadyDone++; continue; }
   const session = {
     export_version: EXPORT_VERSION,
     external_id: c.external_id, title: c.title, agent, machine: cfg.machine, project,
@@ -293,7 +296,7 @@ let cursorRead = 0, cursorSkipped = 0, cursorUnchanged = 0;
 for (const st of stores) {
   const sig = storeSignature(st.path);
   nextState[st.path] = sig;
-  if (state[st.path] === sig) { cursorUnchanged++; continue; }
+  if (!DB_BACKFILL && state[st.path] === sig) { cursorUnchanged++; continue; }
   const s = readStore(st.path, st.kind);
   if (!s || !s.messages.length) { cursorSkipped++; continue; }
   cursorRead++;
@@ -313,13 +316,14 @@ for (const st of stores) {
   const jsonDir = join(rs.root, "data", cfg.machine, "meta", project, agent);
   const jsonPath = join(jsonDir, base + ".json");
   const mdPath = join(mdDir, base + ".md");
-  if (existsSync(jsonPath) && isCurrent(jsonPath, s.messages.length)) { alreadyDone++; continue; }
+  if (!DB_BACKFILL && existsSync(jsonPath) && isCurrent(jsonPath, s.messages.length)) { alreadyDone++; continue; }
 
   const session = {
     export_version: EXPORT_VERSION,
     external_id: s.agentId, title: s.title, agent, machine: cfg.machine, project,
     workspace: wsRaw, source_path: st.path, store_kind: st.kind,
     started_at: iso(s.createdAt ?? null), message_count: s.messages.length,
+    parent_session_id: s.parentAgentId, cursor_mode: s.mode,
     blob_stats: s.blobStats,
   };
   const safeCursor = s.messages.map((m) => ({ ...m, content: redact(m.content, redactStats) }));
@@ -361,7 +365,7 @@ const ocDb = opencodeDbPath(HOME);
 let ocRead = 0, ocUnchanged = 0;
 const ocSig = opencodeSignature(ocDb);
 nextState[ocDb] = ocSig;
-if (state[ocDb] === ocSig) { ocUnchanged = 1; }
+if (!DB_BACKFILL && state[ocDb] === ocSig) { ocUnchanged = 1; }
 else for (const s of readOpencode(ocDb)) {
   const wsRaw = s.directory ?? null;
   const ws = wsRaw ? resolvePath(wsRaw) : null;
@@ -379,7 +383,7 @@ else for (const s of readOpencode(ocDb)) {
   const jsonDir = join(rs.root, "data", cfg.machine, "meta", project, agent);
   const jsonPath = join(jsonDir, base + ".json");
   const mdPath = join(mdDir, base + ".md");
-  if (existsSync(jsonPath) && isCurrent(jsonPath, s.messages.length)) { alreadyDone++; continue; }
+  if (!DB_BACKFILL && existsSync(jsonPath) && isCurrent(jsonPath, s.messages.length)) { alreadyDone++; continue; }
   ocRead++;
   const session = {
     export_version: EXPORT_VERSION,
@@ -387,6 +391,9 @@ else for (const s of readOpencode(ocDb)) {
     workspace: wsRaw, source_path: ocDb, opencode_agent: s.agent,
     started_at: iso(s.createdAt ?? null), ended_at: iso(s.updatedAt ?? null),
     estimated_cost_usd: s.cost, total_input_tokens: s.tokensIn, total_output_tokens: s.tokensOut,
+    total_cache_read_tokens: s.tokensCacheRead, total_cache_creation_tokens: s.tokensCacheWrite,
+    tokens_reasoning: s.tokensReasoning, model: s.model,
+    parent_session_id: s.parentId, fork_session_id: s.forkSessionId,
     message_count: s.messages.length,
   };
   const safe = s.messages.map((m) => ({ ...m, content: redact(m.content, redactStats) }));
@@ -429,7 +436,7 @@ for (const [sid, jsonlPath] of jsonlIdx) {
   const sigKey = `jsonl:${jsonlPath}`;
   const sig = storeSignature(jsonlPath);
   nextState[sigKey] = sig;
-  if (state[sigKey] === sig) continue;
+  if (!DB_BACKFILL && state[sigKey] === sig) continue;
   const r = readJsonlSession(jsonlPath);
   if (!r) continue;
   const wsRaw = r.meta.cwd ?? null;
@@ -448,7 +455,7 @@ for (const [sid, jsonlPath] of jsonlIdx) {
   const jsonDir = join(rs.root, "data", cfg.machine, "meta", project, agent);
   const jsonPath = join(jsonDir, base + ".json");
   const mdPath = join(mdDir, base + ".md");
-  if (existsSync(jsonPath) && isCurrent(jsonPath, r.messages.length)) { alreadyDone++; continue; }
+  if (!DB_BACKFILL && existsSync(jsonPath) && isCurrent(jsonPath, r.messages.length)) { alreadyDone++; continue; }
   claudeRead++;
   const session = {
     export_version: EXPORT_VERSION,
@@ -493,9 +500,12 @@ for (const [sid, jsonlPath] of jsonlIdx) {
 // ---------- persist ----------
 if (sdb) sdb.close();
 if (APPLY) {
-  // state (חתימות דילוג) נכתב תמיד — הוא חוצה-מקורות וחל גם על DB.
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileSync(statePath, JSON.stringify(nextState, null, 2));
+  // 🛑 ב-backfill *אין* לכתוב state: הוא היה מסמן מקורות כ"נראו", וייצוא
+  // הקבצים הבא היה מדלג על סשנים שמעולם לא אורכבו.
+  if (!DB_BACKFILL) {
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileSync(statePath, JSON.stringify(nextState, null, 2));
+  }
   // index.jsonl ו-config.json הם ארטיפקטים של ארכיון-הקבצים — רק אם כותבים קבצים.
   if (WANT_FILES) for (const [name, st] of Object.entries(repoState)) {
     if (!st.indexLines.length && !st.dirty) continue;

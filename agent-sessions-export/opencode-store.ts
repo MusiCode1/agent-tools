@@ -18,6 +18,8 @@ export type OcSession = {
   id: string; title?: string; directory?: string; agent?: string;
   createdAt?: number; updatedAt?: number;
   cost?: number; tokensIn?: number; tokensOut?: number;
+  tokensReasoning?: number; tokensCacheRead?: number; tokensCacheWrite?: number;
+  model?: string; parentId?: string; forkSessionId?: string;
   messages: OcMsg[];
 };
 
@@ -55,7 +57,9 @@ export function readOpencode(dbPath: string): OcSession[] {
   try {
     db.exec("pragma busy_timeout=5000");
     const sessions = db.query(
-      "select id, title, directory, agent, time_created, time_updated, cost, tokens_input, tokens_output from session"
+      "select id, title, directory, agent, model, parent_id, fork_session_id, " +
+      "time_created, time_updated, cost, tokens_input, tokens_output, " +
+      "tokens_reasoning, tokens_cache_read, tokens_cache_write from session"
     ).all() as Record<string, unknown>[];
 
     // כל ה-parts בשאילתה אחת, ממוינים — זול יותר מ-N שאילתות
@@ -96,6 +100,12 @@ export function readOpencode(dbPath: string): OcSession[] {
         createdAt: Number(s.time_created) || undefined, updatedAt: Number(s.time_updated) || undefined,
         cost: Number(s.cost) || undefined,
         tokensIn: Number(s.tokens_input) || undefined, tokensOut: Number(s.tokens_output) || undefined,
+        tokensReasoning: Number(s.tokens_reasoning) || undefined,
+        tokensCacheRead: Number(s.tokens_cache_read) || undefined,
+        tokensCacheWrite: Number(s.tokens_cache_write) || undefined,
+        model: (s.model as string) || undefined,
+        parentId: (s.parent_id as string) || undefined,
+        forkSessionId: (s.fork_session_id as string) || undefined,
         messages: msgs,
       });
     }

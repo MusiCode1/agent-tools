@@ -21,6 +21,7 @@ const PROTO_FALLBACK_MAX = 400;
 export type CursorMsg = { role: string; content: string; source: "json" | "protobuf" };
 export type CursorSession = {
   storePath: string; agentId?: string; title?: string; cwd?: string;
+  parentAgentId?: string; mode?: string;
   createdAt?: number; kind: "acp-sessions" | "chats";
   messages: CursorMsg[]; blobStats: { json: number; proto: number; skipped: number };
 };
@@ -147,6 +148,9 @@ export function readStore(storePath: string, kind: CursorSession["kind"]): Curso
     return {
       storePath, kind, messages: final,
       agentId: meta.agentId as string | undefined,
+      // subagentInfo.parentAgentId — ה-DAG של קורסור (תת-סוכן → הורה)
+      parentAgentId: (meta.subagentInfo as { parentAgentId?: string } | undefined)?.parentAgentId,
+      mode: meta.mode as string | undefined,
       title: (meta.name as string) ?? (side.title as string),
       cwd: side.cwd as string | undefined,
       createdAt: meta.createdAt as number | undefined,
