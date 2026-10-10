@@ -18,6 +18,7 @@
  */
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
+import { deflateSync } from "node:zlib";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -27,6 +28,8 @@ export type DbMsg = {
   created_at?: string | null; // ISO
   content: string;
   model?: string | null;
+  extra?: Record<string, unknown>;  // מטא שלם — נשמר גלוי
+  heavy?: unknown[];                // I/O מלא של כלים — נדחס
 };
 
 export type DbSession = {
@@ -55,6 +58,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   title       TEXT,
   started_at  INTEGER,
   ended_at    INTEGER,
+  model       TEXT,       -- opencode 100% · Claude primary · codex דליל · cursor אין
+  model_provider TEXT,
+  parent_session_id TEXT, -- DAG: opencode parent_id · codex parent_thread_id
   usage       TEXT,       -- JSON: tokens מצטברים (Claude) או cost/tokens (cass/opencode)
   meta        TEXT
 );
@@ -69,12 +75,15 @@ CREATE TABLE IF NOT EXISTS messages (
   role         TEXT,
   model        TEXT,
   ts           INTEGER,
-  text         TEXT NOT NULL,
-  extra        TEXT
+  parent_id    TEXT,      -- עץ-השיחה: parentUuid (Claude) / thread-parent (codex)
+  text         TEXT NOT NULL,   -- חילוץ לחיפוש (פלט-כלי מקוצר)
+  extra        TEXT,      -- JSON גלוי — כל המטא, ניתן ל-json_extract
+  heavy        BLOB       -- JSON דחוס (zlib) — I/O מלא של כלים + thinking
 );
 CREATE INDEX IF NOT EXISTS idx_msg_session ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_msg_ts      ON messages(ts);
 CREATE INDEX IF NOT EXISTS idx_msg_chash   ON messages(content_hash);
+CREATE INDEX IF NOT EXISTS idx_msg_parent  ON messages(parent_id);
 -- external-content FTS: לא משכפל טקסט; מאוכלס ידנית רק ל-user+assistant.
 -- ⚠️ count(*) וסריקת rowid משקפים את טבלת-התוכן, אבל MATCH מוצא רק שורות
 --    שהוכנסו (נמדד: מונחי-כלי לא נמצאים). append-only ⇒ בלי טריגרים.
@@ -120,8 +129,8 @@ export class SessionsDb {
     this.db.exec(SCHEMA);
     this.insMsg = this.db.query(
       `INSERT OR IGNORE INTO messages
-       (id, content_hash, session_id, seq, role, model, ts, text, extra)
-       VALUES ($id,$ch,$session,$seq,$role,$model,$ts,$text,$extra)`,
+       (id, content_hash, session_id, seq, role, model, ts, parent_id, text, extra, heavy)
+       VALUES ($id,$ch,$session,$seq,$role,$model,$ts,$parent,$text,$extra,$heavy)`,
     );
     // external-content FTS מאוכלס לפי rowid של השורה שזה-עתה נכתבה
     this.insFts = this.db.query(
@@ -129,8 +138,10 @@ export class SessionsDb {
     );
     this.insSess = this.db.query(
       `INSERT OR REPLACE INTO sessions
-       (session_id, machine, cli, project, cwd, title, started_at, ended_at, usage, meta)
-       VALUES ($session,$machine,$cli,$project,$cwd,$title,$started,$ended,$usage,$meta)`,
+       (session_id, machine, cli, project, cwd, title, started_at, ended_at,
+        model, model_provider, parent_session_id, usage, meta)
+       VALUES ($session,$machine,$cli,$project,$cwd,$title,$started,$ended,
+               $model,$provider,$parent,$usage,$meta)`,
     );
   }
 
@@ -142,6 +153,9 @@ export class SessionsDb {
       $session: sid, $machine: s.machine, $cli: s.agent, $project: s.project,
       $cwd: s.workspace ?? null, $title: s.title ?? null,
       $started: tsMs(s.started_at), $ended: tsMs(s.ended_at),
+      $model: (s.primary_model ?? s.model ?? null) as string | null,
+      $provider: (s.model_provider ?? null) as string | null,
+      $parent: (s.parent_session_id ?? s.parent_id ?? null) as string | null,
       $usage: extractUsage(s), $meta: s.meta ? JSON.stringify(s.meta) : null,
     });
     let added = 0;
@@ -151,13 +165,18 @@ export class SessionsDb {
         if (!text) return;
         const ch = sha(text);
         const id = sha(`${s.machine}\0${s.agent}\0${sid}\0${seq}\0${ch}`).slice(0, 32);
-        const extra: Record<string, unknown> = {};
+        const extra: Record<string, unknown> = { ...(m.extra ?? {}) };
         if (m.author) extra.author = m.author;
         if (m.created_at) extra.created_at_raw = m.created_at;
+        // parent_id נייטיבי (parentUuid) — נשמר כפי שהוא, לא ממופה למזהה שלנו
+        const parent = (extra.parentUuid ?? extra.parent_thread_id ?? null) as string | null;
         const res = this.insMsg.run({
           $id: id, $ch: ch, $session: sid, $seq: seq, $role: m.role,
-          $model: m.model ?? null, $ts: tsMs(m.created_at), $text: text,
+          $model: m.model ?? null, $ts: tsMs(m.created_at), $parent: parent, $text: text,
           $extra: Object.keys(extra).length ? JSON.stringify(extra) : null,
+          $heavy: m.heavy?.length
+            ? deflateSync(Buffer.from(JSON.stringify(m.heavy), "utf8"))
+            : null,
         });
         if (res.changes > 0) {
           added++;

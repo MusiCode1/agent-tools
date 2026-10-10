@@ -11,7 +11,13 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-export type JsonlMsg = { role: string; content: string; created_at?: string; model?: string };
+export type JsonlMsg = {
+  role: string; content: string; created_at?: string; model?: string;
+  /** כל המטא שאינו עמודה — נשמר שלם, ניתן לשאילתה (לא דחוס). */
+  extra?: Record<string, unknown>;
+  /** ה-I/O המלא של הכלים — נדחס ב-DB, לא נכנס ל-FTS ולא ל-text. */
+  heavy?: unknown[];
+};
 
 export type JsonlMeta = {
   agent_setting?: string;   // הפרסונה שרצה (planner / verifier / …) — לא קיים בשום מקום אחר
@@ -34,12 +40,29 @@ export type JsonlMeta = {
   };
 };
 
+/** שדות ברמת-הרשומה שנשמרים ב-extra. ‏uuid/parentUuid הם עץ-השיחה;
+ *  sourceTool* מקשרים סשן תת-סוכן לקריאת-הכלי של ההורה. */
+const RECORD_META = [
+  "uuid", "parentUuid", "isSidechain", "userType", "entrypoint", "requestId",
+  "effort", "perTurnEffort", "promptId", "attributionSkill", "attributionMcpServer",
+  "attributionMcpTool", "permissionMode", "promptSource", "sourceToolAssistantUUID",
+  "sourceToolUseID", "apiBlockIndex", "origin", "turnOrigin", "toolDenialKind",
+  "advisorModel", "isMeta", "turnCompanion",
+] as const;
+
+/** שדות מתוך message שנשמרים ב-extra (בקידומת message_). */
+const MESSAGE_META = [
+  "id", "stop_reason", "stop_sequence", "stop_details", "usage",
+  "container", "type", "context_management",
+] as const;
+
 /** מחלץ טקסט מ-message.content — מחרוזת או מערך חלקים. חלקי tool_use/
  *  tool_result נשמרים מקוצרים; thinking נזרק (רעש לחיפוש). */
-function partsText(c: unknown): string {
-  if (typeof c === "string") return c;
-  if (!Array.isArray(c)) return "";
+function partsText(c: unknown): { text: string; heavy: unknown[] } {
+  if (typeof c === "string") return { text: c, heavy: [] };
+  if (!Array.isArray(c)) return { text: "", heavy: [] };
   const out: string[] = [];
+  const heavy: unknown[] = [];
   for (const p of c) {
     if (typeof p === "string") { out.push(p); continue; }
     if (!p || typeof p !== "object") continue;
@@ -47,14 +70,18 @@ function partsText(c: unknown): string {
     if (o.type === "text" && typeof o.text === "string") out.push(o.text);
     else if (o.type === "tool_use") {
       const j = JSON.stringify(o.input ?? "");
+      // text מקוצר לחיפוש; המלא נשמר ב-heavy ולא נזרק
       out.push(`[Tool: ${String(o.name ?? "?")}] ${j.slice(0, 1500)}`);
+      if (j.length > 1500) heavy.push({ kind: "tool_use", name: o.name ?? null, id: o.id ?? null, input: o.input });
     } else if (o.type === "tool_result") {
       const c2 = typeof o.content === "string" ? o.content : JSON.stringify(o.content ?? "");
       out.push(c2.slice(0, 2000));
+      if (c2.length > 2000) heavy.push({ kind: "tool_result", id: o.tool_use_id ?? null, content: o.content });
+    } else if (o.type === "thinking" || o.type === "redacted_thinking") {
+      heavy.push({ kind: String(o.type), thinking: o.thinking ?? o.data ?? null });
     }
-    // thinking / redacted_thinking — נזרקים
   }
-  return out.join("\n").trim();
+  return { text: out.join("\n").trim(), heavy };
 }
 
 /** קורא סשן Claude Code שלם מה-.jsonl — תוכן ומטא-דאטה, בלי cass. */
@@ -84,13 +111,19 @@ export function readJsonlSession(path: string): { meta: JsonlMeta; messages: Jso
       u.thinking_tokens += usage.output_tokens_details?.thinking_tokens ?? 0;
       u.assistant_turns++;
     }
-    const content = partsText(m.content);
+    const { text: content, heavy } = partsText(m.content);
     if (!content) continue;
     const ts = typeof o.timestamp === "string" ? o.timestamp : undefined;
     const model = typeof m.model === "string" ? m.model : undefined;
     if (model && !meta.primary_model) meta.primary_model = model;
     if (ts) { if (!meta.started_at) meta.started_at = ts; meta.ended_at = ts; }
-    messages.push({ role: String(t), content, created_at: ts, model });
+    // כל מטא שאינו עמודה — נשמר שלם. אין רשימת-היתר צרה: מה שקיים, נלקח.
+    const extra: Record<string, unknown> = {};
+    for (const k of RECORD_META) if (o[k] !== undefined) extra[k] = o[k];
+    for (const k of MESSAGE_META) if (m[k] !== undefined) extra["message_" + k] = m[k];
+    messages.push({ role: String(t), content, created_at: ts, model,
+      extra: Object.keys(extra).length ? extra : undefined,
+      heavy: heavy.length ? heavy : undefined });
   }
   if (u.assistant_turns > 0) meta.usage = u;
   return messages.length ? { meta, messages } : null;

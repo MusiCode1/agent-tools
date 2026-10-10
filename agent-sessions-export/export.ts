@@ -460,7 +460,10 @@ for (const [sid, jsonlPath] of jsonlIdx) {
   };
   const safe = r.messages.map((m) => ({ ...m, content: redact(m.content, redactStats) }));
   if (sdb) dbAdded += sdb.upsertSession(session, safe);
-  const jsonBody = JSON.stringify({ session, messages: safe }, null, 2);
+  // heavy נשמר דחוס ב-DB בלבד. ב-JSON של הארכיון הוא לא-דחוס ⇒ היה מנפח את
+  // ריפו-הדאטה בגיט. extra (המטא) כן נכנס — הוא קטן ובעל-ערך.
+  const jsonBody = JSON.stringify(
+    { session, messages: safe.map(({ heavy, ...rest }) => rest) }, null, 2);
   const md = [
     `# ${session.title ?? "(ללא כותרת)"}`, "",
     `*${agent} · ${project} · ${r.meta.started_at?.slice(0, 19) ?? "?"}*`, "",
