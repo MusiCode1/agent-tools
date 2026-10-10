@@ -15,6 +15,7 @@ import { findStores, readStore, storeSignature } from "./cursor-store";
 import { redact, type RedactStats } from "./redact";
 import { readOpencode, opencodeDbPath, opencodeSignature } from "./opencode-store";
 import { indexClaudeJsonl, readJsonlMeta, readJsonlSession } from "./jsonl-meta";
+import { SessionsDb } from "./db";
 
 type Route = { match?: string; match_source?: string; repo: string | null; label?: string };
 type Config = {
@@ -30,6 +31,17 @@ type Config = {
 const HOME = homedir();
 const CONFIG_PATH = join(HOME, ".config", "agent-sessions", "config.json");
 const APPLY = process.argv.includes("--apply");
+
+// ---------- בורר פלט: קבצים / DB / שניהם ----------
+const OUT_RAW = process.argv.find((a) => a.startsWith("--out="))?.split("=")[1] ?? "both";
+if (!["files", "db", "both"].includes(OUT_RAW)) die(`--out לא חוקי: ${OUT_RAW} (files|db|both)`);
+const OUT = OUT_RAW as "files" | "db" | "both";
+const WANT_FILES = OUT !== "db";
+const WANT_DB = OUT !== "files";
+const SESSIONS_DB_PATH =
+  process.argv.find((a) => a.startsWith("--db-path="))?.split("=")[1] ??
+  join(HOME, ".cache", "agent-sessions", "sessions.db");
+const REBUILD_DB = process.argv.includes("--rebuild-db");
 
 /** גרסת סכימת הייצוא. העלאה גורמת לכתיבה מחדש של קבצים ישנים בריצה הבאה,
  *  כך ששינוי פורמט לא מותיר חצי ארכיון בגרסה ישנה.
@@ -52,6 +64,28 @@ for (const r of cfg.project_roots) {
   if (!existsSync(r)) die(`project_root לא קיים: ${r}\nהקונפיג לא מתאים למכונה הזאת. לא ממשיך.`);
 }
 if (!cfg.repos[cfg.default]) die(`default '${cfg.default}' אינו ברשימת repos`);
+
+// ---------- rebuild-db: בונה את ה-DB מהארכיון הקיים (meta/*.json), בלי cass ----------
+if (REBUILD_DB) {
+  const sdb = new SessionsDb(SESSIONS_DB_PATH);
+  let files = 0, added = 0, bad = 0;
+  for (const root of Object.values(cfg.repos)) {
+    if (!root) continue;
+    const metaDir = join(root, "data", cfg.machine, "meta");
+    if (!existsSync(metaDir)) continue;
+    for (const rel of new Bun.Glob("**/*.json").scanSync(metaDir)) {
+      try {
+        const { session, messages } = JSON.parse(readFileSync(join(metaDir, rel), "utf8"));
+        if (!session || !Array.isArray(messages)) { bad++; continue; }
+        added += sdb.upsertSession(session, messages);
+        files++;
+      } catch { bad++; }
+    }
+  }
+  sdb.close();
+  console.log(`rebuild-db → ${SESSIONS_DB_PATH}\n  ${files} קבצי-מטא · ${added} הודעות חדשות · ${bad} דילוגים`);
+  process.exit(0);
+}
 
 const DB_PATH = cfg.cass_db ?? join(HOME, ".local/share/coding-agent-search/agent_search.db");
 if (!existsSync(DB_PATH)) die(`ארכיון cass לא נמצא: ${DB_PATH}`);
@@ -159,6 +193,10 @@ type Stat = { convs: number; bytes: number };
 const stats: Record<string, Record<string, Stat>> = {};
 let skippedRoute = 0, alreadyDone = 0, written = 0, totalBytes = 0;
 const redactStats: RedactStats = {};
+// DB נגזר — מקביל לקבצים. upsert אידמפוטנטי; מאוכלס רק לסשנים שנכתבים
+// בריצה הזו. לאכלוס מהארכיון הקיים: --rebuild-db.
+const sdb = APPLY && WANT_DB ? new SessionsDb(SESSIONS_DB_PATH) : null;
+let dbAdded = 0;
 
 for (const c of convs) {
   const wsRaw: string | null = c.workspace_path ?? null;
@@ -206,6 +244,7 @@ for (const c of convs) {
   const safeMsgs = msgs.map(m => ({
     role: m.role, author: m.author, created_at: iso(m.created_at),
     content: redact(m.content ?? "", redactStats) }));
+  if (sdb) dbAdded += sdb.upsertSession(session, safeMsgs);
   const jsonBody = JSON.stringify({ session, messages: safeMsgs }, null, 2);
 
   const md = [
@@ -232,7 +271,7 @@ for (const c of convs) {
     json: `data/${cfg.machine}/meta/${project}/${agent}/${base}.json`,
   }));
 
-  if (APPLY) {
+  if (APPLY && WANT_FILES) {
     mkdirSync(mdDir, { recursive: true });
     mkdirSync(jsonDir, { recursive: true });
     writeFileSync(jsonPath, jsonBody);
@@ -284,6 +323,7 @@ for (const st of stores) {
     blob_stats: s.blobStats,
   };
   const safeCursor = s.messages.map((m) => ({ ...m, content: redact(m.content, redactStats) }));
+  if (sdb) dbAdded += sdb.upsertSession(session, safeCursor);
   const jsonBody = JSON.stringify({ session, messages: safeCursor }, null, 2);
   const md = [
     `# ${s.title ?? "(ללא כותרת)"}`, "",
@@ -304,7 +344,7 @@ for (const st of stores) {
     md: `data/${cfg.machine}/sessions/${project}/${agent}/${base}.md`,
     json: `data/${cfg.machine}/meta/${project}/${agent}/${base}.json`,
   }));
-  if (APPLY) {
+  if (APPLY && WANT_FILES) {
     mkdirSync(mdDir, { recursive: true });
     mkdirSync(jsonDir, { recursive: true });
     writeFileSync(jsonPath, jsonBody);
@@ -350,6 +390,7 @@ else for (const s of readOpencode(ocDb)) {
     message_count: s.messages.length,
   };
   const safe = s.messages.map((m) => ({ ...m, content: redact(m.content, redactStats) }));
+  if (sdb) dbAdded += sdb.upsertSession(session, safe);
   const jsonBody = JSON.stringify({ session, messages: safe }, null, 2);
   const md = [
     `# ${s.title ?? "(ללא כותרת)"}`, "",
@@ -369,7 +410,7 @@ else for (const s of readOpencode(ocDb)) {
     md: `data/${cfg.machine}/sessions/${project}/${agent}/${base}.md`,
     json: `data/${cfg.machine}/meta/${project}/${agent}/${base}.json`,
   }));
-  if (APPLY) {
+  if (APPLY && WANT_FILES) {
     mkdirSync(mdDir, { recursive: true });
     mkdirSync(jsonDir, { recursive: true });
     writeFileSync(jsonPath, jsonBody);
@@ -418,6 +459,7 @@ for (const [sid, jsonlPath] of jsonlIdx) {
     jsonl_meta: r.meta,
   };
   const safe = r.messages.map((m) => ({ ...m, content: redact(m.content, redactStats) }));
+  if (sdb) dbAdded += sdb.upsertSession(session, safe);
   const jsonBody = JSON.stringify({ session, messages: safe }, null, 2);
   const md = [
     `# ${session.title ?? "(ללא כותרת)"}`, "",
@@ -437,7 +479,7 @@ for (const [sid, jsonlPath] of jsonlIdx) {
     md: `data/${cfg.machine}/sessions/${project}/${agent}/${base}.md`,
     json: `data/${cfg.machine}/meta/${project}/${agent}/${base}.json`,
   }));
-  if (APPLY) {
+  if (APPLY && WANT_FILES) {
     mkdirSync(mdDir, { recursive: true });
     mkdirSync(jsonDir, { recursive: true });
     writeFileSync(jsonPath, jsonBody);
@@ -446,10 +488,13 @@ for (const [sid, jsonlPath] of jsonlIdx) {
 }
 
 // ---------- persist ----------
+if (sdb) sdb.close();
 if (APPLY) {
+  // state (חתימות דילוג) נכתב תמיד — הוא חוצה-מקורות וחל גם על DB.
   mkdirSync(dirname(statePath), { recursive: true });
   writeFileSync(statePath, JSON.stringify(nextState, null, 2));
-  for (const [name, st] of Object.entries(repoState)) {
+  // index.jsonl ו-config.json הם ארטיפקטים של ארכיון-הקבצים — רק אם כותבים קבצים.
+  if (WANT_FILES) for (const [name, st] of Object.entries(repoState)) {
     if (!st.indexLines.length && !st.dirty) continue;
     const base = join(st.root, "data", cfg.machine);
     mkdirSync(base, { recursive: true });
@@ -470,6 +515,7 @@ for (const [repo, projects] of Object.entries(stats)) {
     console.log(`      ${String(s.convs).padStart(5)}  ${p.padEnd(34)} ${mb(s.bytes).padStart(8)}`);
   console.log();
 }
+console.log(`\nפלט: ${OUT}${WANT_DB ? ` · DB ${SESSIONS_DB_PATH}${sdb ? ` · ${dbAdded} הודעות חדשות` : ""}` : ""}`);
 console.log(`סה"כ לכתיבה: ${written} שיחות · ${mb(totalBytes)}`);
 console.log(`כבר קיימים (דילוג): ${alreadyDone}`);
 console.log(`דולגו ע"י routing (repo:null): ${skippedRoute}`);
