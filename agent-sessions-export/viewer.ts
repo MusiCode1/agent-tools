@@ -31,6 +31,8 @@ const DEFAULT_DAYS = Number(arg("days", "7"));
 /** קיצוץ הטקסט בתשדורת. הפאנל צריך הקשר, לא מסמך שלם —
  *  נמדד: 600 תווים ל-14 יום = 25MB לא-דחוס. */
 const SNIPPET = Number(arg("snippet", "300"));
+/** אסימון-גישה. ריק = ללא שער (מקומי בלבד). עם אסימון: הנתיב הוא /<token>/ */
+const TOKEN = arg("token", "") ?? "";
 /** התבנית נמסרת ב---template, או יושבת ליד הסקריפט. אין נתיב מקובע. */
 const TEMPLATE = arg("template", join(dirname(Bun.main), "day-columns.template.html"))!;
 
@@ -62,7 +64,10 @@ function buildPayload(db: Database, fromMs: number, toMs: number, work: string[]
     isWork(r.project, r.cwd) ? 1 : 0,
     idx(machines, r.machine || "?"),
     idx(kinds, r.cli || "?"),
-    String(r.text ?? "").slice(0, SNIPPET),
+    // בלוק-כלי מכווץ לסימון: ב-Claude ה-tool_use יושב בתוך assistant
+    // וה-tool_result בתוך user, ולכן 74% מהטקסט כאן הוא פלט-כלי.
+    String(r.text ?? "").replace(/\[Tool: ([^\]]{1,40})\][\s\S]*/, "[Tool: $1 …]")
+      .slice(0, SNIPPET),
   ]);
   return {
     generated: new Date().toISOString(),
@@ -85,7 +90,8 @@ Bun.serve({
   hostname: "127.0.0.1",
   fetch(req) {
     const url = new URL(req.url);
-    if (url.pathname !== "/" && url.pathname !== "/index.html") {
+    const want = TOKEN ? `/${TOKEN}/` : "/";
+    if (url.pathname !== want && url.pathname !== want + "index.html") {
       return new Response("not found", { status: 404 });
     }
     const days = Number(url.searchParams.get("days") ?? DEFAULT_DAYS);
@@ -128,5 +134,5 @@ Bun.serve({
     });
   },
 });
-console.log(`▶ תצוגה מעל ${DB_PATH}\n  http://127.0.0.1:${PORT}/  (ברירת-מחדל: ${DEFAULT_DAYS} ימים)`);
+console.log(`▶ תצוגה מעל ${DB_PATH}\n  http://127.0.0.1:${PORT}/${TOKEN ? TOKEN + "/" : ""}  (ברירת-מחדל: ${DEFAULT_DAYS} ימים)`);
 console.log(`  פרמטרים: ?days=30 · ?from=2026-09-10&to=2026-10-05 · ?work=tzlev,aac`);
