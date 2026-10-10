@@ -1,0 +1,132 @@
+#!/usr/bin/env bun
+/**
+ * viewer.ts — מגיש את תצוגת "עמודה ליום" מעל sessions.db.
+ *
+ * מזין את אותה תבנית HTML שנבנתה לשחזור-השעות, אבל מה-DB במקום
+ * מקורפוס מוטבע — ולכן כל לוגיקת הלקוח (מחוונים, בלוקים, פאנל
+ * ההודעות) עובדת בלי שינוי.
+ *
+ * 🛑 הבחנה שחשוב לא לטשטש: זו תצוגת **פעילות**, לא כלי-חיוב.
+ *    קורפוס-השעות עבר סינון-אוטומציה, הפרדת-מפעיל ודה-דופ ידניים;
+ *    ה-DB לא. המספרים כאן אינם מספרי-הדיווח.
+ *
+ *   bun viewer.ts                 # 127.0.0.1:4178
+ *   bun viewer.ts --port 4200 --days 30
+ */
+import { Database } from "bun:sqlite";
+import { readFileSync, existsSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { homedir } from "node:os";
+
+const HOME = homedir();
+const arg = (k: string, d?: string) =>
+  process.argv.find((a) => a.startsWith(`--${k}=`))?.split("=")[1] ??
+  (process.argv.includes(`--${k}`)
+    ? process.argv[process.argv.indexOf(`--${k}`) + 1]
+    : undefined) ?? d;
+
+const DB_PATH = arg("db", join(HOME, ".cache", "agent-sessions", "sessions.db"))!;
+const PORT = Number(arg("port", "4178"));
+const DEFAULT_DAYS = Number(arg("days", "7"));
+/** קיצוץ הטקסט בתשדורת. הפאנל צריך הקשר, לא מסמך שלם —
+ *  נמדד: 600 תווים ל-14 יום = 25MB לא-דחוס. */
+const SNIPPET = Number(arg("snippet", "300"));
+/** התבנית נמסרת ב---template, או יושבת ליד הסקריפט. אין נתיב מקובע. */
+const TEMPLATE = arg("template", join(dirname(Bun.main), "day-columns.template.html"))!;
+
+/** ברירת-מחדל לסיווג עבודה: פרויקטים ארגוניים. ניתן לעקיפה ב-?work=a,b,c */
+const DEFAULT_WORK = ["tzlev-docs-repo", "portal", "aac-board", "aac-board-app",
+  "students-and-school-manager", "daily-schedule", "fully-kiosk-admin", "shaon"];
+
+const TZ_OFFSET_MS = 3 * 3600 * 1000;   // שעון ישראל — התבנית קוראת ב-getUTC*
+
+function buildPayload(db: Database, fromMs: number, toMs: number, work: string[]) {
+  const rows = db.query(
+    `SELECT m.ts, m.role, m.text, s.project, s.cwd, s.cli, s.machine
+       FROM messages m JOIN sessions s ON s.session_id = m.session_id
+      WHERE m.ts BETWEEN $from AND $to AND m.role IN ('user','assistant')
+      ORDER BY m.ts`,
+  ).all({ $from: fromMs, $to: toMs }) as Record<string, any>[];
+
+  const projects: string[] = [], machines: string[] = [], kinds: string[] = [];
+  const idx = (arr: string[], v: string) => {
+    const i = arr.indexOf(v);
+    return i >= 0 ? i : arr.push(v) - 1;
+  };
+  const isWork = (p: string, cwd: string) =>
+    work.some((w) => (p ?? "").includes(w) || (cwd ?? "").includes(w));
+
+  const events = rows.map((r) => [
+    Number(r.ts) + TZ_OFFSET_MS,                     // חותמת מוזזת לשעון המקום
+    idx(projects, r.project || "(ללא פרויקט)"),
+    isWork(r.project, r.cwd) ? 1 : 0,
+    idx(machines, r.machine || "?"),
+    idx(kinds, r.cli || "?"),
+    String(r.text ?? "").slice(0, SNIPPET),
+  ]);
+  return {
+    generated: new Date().toISOString(),
+    projects, machines, kinds, events,
+    fixed: [], rate: 70, already_in_sheet_seconds: 0,
+  };
+}
+
+if (!existsSync(TEMPLATE)) {
+  console.error(`✗ תבנית לא נמצאה: ${TEMPLATE}\n  העבר --template=<נתיב>`);
+  process.exit(1);
+}
+const tpl = TEMPLATE;
+if (!existsSync(DB_PATH)) { console.error(`✗ DB לא נמצא: ${DB_PATH}`); process.exit(1); }
+const html = readFileSync(tpl, "utf8");
+const db = new Database(DB_PATH, { readonly: true });
+
+Bun.serve({
+  port: PORT,
+  hostname: "127.0.0.1",
+  fetch(req) {
+    const url = new URL(req.url);
+    if (url.pathname !== "/" && url.pathname !== "/index.html") {
+      return new Response("not found", { status: 404 });
+    }
+    const days = Number(url.searchParams.get("days") ?? DEFAULT_DAYS);
+    const toMs = url.searchParams.get("to")
+      ? Date.parse(url.searchParams.get("to")! + "T23:59:59+03:00") : Date.now();
+    const fromMs = url.searchParams.get("from")
+      ? Date.parse(url.searchParams.get("from")! + "T00:00:00+03:00")
+      : toMs - days * 86400_000;
+    const work = (url.searchParams.get("work") ?? "").trim()
+      ? url.searchParams.get("work")!.split(",") : DEFAULT_WORK;
+
+    const t0 = performance.now();
+    const payload = buildPayload(db, fromMs, toMs, work);
+    const ms = (performance.now() - t0).toFixed(0);
+
+    const banner = `<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;
+      padding:8px 12px;margin:12px 18px;font-size:12.5px">
+      תצוגת <b>פעילות</b> מתוך <code>sessions.db</code> — ${payload.events.length.toLocaleString("he-IL")}
+      הודעות (user+assistant) ב-${days} הימים האחרונים · נבנה ב-${ms}ms.
+      🛑 <b>אלה אינם מספרי-חיוב</b>: קורפוס-השעות עבר סינון-אוטומציה והפרדת-מפעיל, וה-DB לא.
+      </div>`;
+
+    // 🛑 טקסט-הודעה שמכיל "</script>" סוגר את בלוק הסקריפט מוקדם ושובר
+    //    את העמוד. נמדד: 214 מופעים כאלה ב-30 יום. בורחים מכל '<'.
+    const dataJson = JSON.stringify(payload).replace(/</g, "\\u003c");
+    // 🛑 replace עם מחרוזת מפרש $& ו-$' — טקסט-הודעה עם $' שכפל את כל
+    //    זנב-התבנית 16 פעמים. replacer כפונקציה אינו מפרש כלום.
+    const body = html
+      .replace("/*__DATA__*/null", () => dataJson)
+      .replace('<div class="panel summary"', () => banner + '<div class="panel summary"');
+    // gzip חוסך פי-כמה בלי שום שינוי בלקוח
+    if (!(req.headers.get("accept-encoding") ?? "").includes("gzip")) {
+      return new Response(body, {
+        headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+      });
+    }
+    return new Response(Bun.gzipSync(Buffer.from(body, "utf8")), {
+      headers: { "Content-Type": "text/html; charset=utf-8",
+        "Content-Encoding": "gzip", "Cache-Control": "no-store" },
+    });
+  },
+});
+console.log(`▶ תצוגה מעל ${DB_PATH}\n  http://127.0.0.1:${PORT}/  (ברירת-מחדל: ${DEFAULT_DAYS} ימים)`);
+console.log(`  פרמטרים: ?days=30 · ?from=2026-09-10&to=2026-10-05 · ?work=tzlev,aac`);
