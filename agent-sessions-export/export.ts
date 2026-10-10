@@ -145,6 +145,16 @@ function isCurrent(p: string, msgCount: number): boolean {
   } catch { return false; }   // קובץ פגום — נכתוב מחדש
 }
 
+/** 🔴 redact על מבנה JSON. ‏heavy/extra לא עברו סניטיזציה — נמדד 0/400
+ *  רשומות heavy עם [REDACTED:], בעוד ה-content כן. ‏heavy הוא ה-I/O המלא
+ *  של הכלים, כלומר בדיוק המקום שאליו נוחתים תוכני-קבצים וסודות.
+ *  נפילה בפרסור ⇒ מחזיר undefined: עדיף לאבד את השדה מאשר לדלוף. */
+function redactDeep<T>(v: T | undefined, stats: RedactStats): T | undefined {
+  if (v == null) return undefined;
+  try { return JSON.parse(redact(JSON.stringify(v), stats)) as T; }
+  catch { return undefined; }
+}
+
 const safeName = (id: string) => (id.split("/").pop() || id).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120);
 const iso = (ms: number | null) => (ms == null ? null : new Date(ms > 1e11 ? ms : ms * 1000).toISOString());
 
@@ -465,7 +475,12 @@ for (const [sid, jsonlPath] of jsonlIdx) {
     primary_model: r.meta.primary_model, message_count: r.messages.length,
     jsonl_meta: r.meta,
   };
-  const safe = r.messages.map((m) => ({ ...m, content: redact(m.content, redactStats) }));
+  const safe = r.messages.map((m) => ({
+    ...m,
+    content: redact(m.content, redactStats),
+    extra: redactDeep(m.extra, redactStats),
+    heavy: redactDeep(m.heavy, redactStats),
+  }));
   if (sdb) dbAdded += sdb.upsertSession(session, safe);
   // heavy נשמר דחוס ב-DB בלבד. ב-JSON של הארכיון הוא לא-דחוס ⇒ היה מנפח את
   // ריפו-הדאטה בגיט. extra (המטא) כן נכנס — הוא קטן ובעל-ערך.
@@ -498,6 +513,7 @@ for (const [sid, jsonlPath] of jsonlIdx) {
 }
 
 // ---------- persist ----------
+const dbEnriched = sdb?.enrichedTotal ?? 0;
 if (sdb) sdb.close();
 if (APPLY) {
   // 🛑 ב-backfill *אין* לכתוב state: הוא היה מסמן מקורות כ"נראו", וייצוא
@@ -528,7 +544,7 @@ for (const [repo, projects] of Object.entries(stats)) {
     console.log(`      ${String(s.convs).padStart(5)}  ${p.padEnd(34)} ${mb(s.bytes).padStart(8)}`);
   console.log();
 }
-console.log(`\nפלט: ${OUT}${WANT_DB ? ` · DB ${SESSIONS_DB_PATH}${sdb ? ` · ${dbAdded} הודעות חדשות` : ""}` : ""}`);
+console.log(`\nפלט: ${DB_BACKFILL ? "backfill" : OUT}${WANT_DB ? ` · DB ${SESSIONS_DB_PATH}${sdb ? ` · ${dbAdded} חדשות · ${dbEnriched} הועשרו` : ""}` : ""}`);
 console.log(`סה"כ לכתיבה: ${written} שיחות · ${mb(totalBytes)}`);
 console.log(`כבר קיימים (דילוג): ${alreadyDone}`);
 console.log(`דולגו ע"י routing (repo:null): ${skippedRoute}`);

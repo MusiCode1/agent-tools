@@ -28,6 +28,9 @@ export type DbMsg = {
   created_at?: string | null; // ISO
   content: string;
   model?: string | null;
+  /** טקסט ל-DB/FTS. פלט-כלי מוחלף בסימון — 74% מהטקסט המאונדקס היה
+   *  תוכן-כלים, לא-דחוס. הארכיון מקבל את content המלא. */
+  lean?: string;
   extra?: Record<string, unknown>;  // מטא שלם — נשמר גלוי
   heavy?: unknown[];                // I/O מלא של כלים — נדחס
 };
@@ -80,10 +83,6 @@ CREATE TABLE IF NOT EXISTS messages (
   extra        TEXT,      -- JSON גלוי — כל המטא, ניתן ל-json_extract
   heavy        BLOB       -- JSON דחוס (zlib) — I/O מלא של כלים + thinking
 );
-CREATE INDEX IF NOT EXISTS idx_msg_session ON messages(session_id);
-CREATE INDEX IF NOT EXISTS idx_msg_ts      ON messages(ts);
-CREATE INDEX IF NOT EXISTS idx_msg_chash   ON messages(content_hash);
-CREATE INDEX IF NOT EXISTS idx_msg_parent  ON messages(parent_id);
 -- external-content FTS: לא משכפל טקסט; מאוכלס ידנית רק ל-user+assistant.
 -- ⚠️ count(*) וסריקת rowid משקפים את טבלת-התוכן, אבל MATCH מוצא רק שורות
 --    שהוכנסו (נמדד: מונחי-כלי לא נמצאים). append-only ⇒ בלי טריגרים.
@@ -92,6 +91,21 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
   text, content='messages', content_rowid='rowid', tokenize='trigram'
 );
 `;
+
+const INDEXES = `
+CREATE INDEX IF NOT EXISTS idx_msg_session ON messages(session_id);
+CREATE INDEX IF NOT EXISTS idx_msg_ts      ON messages(ts);
+CREATE INDEX IF NOT EXISTS idx_msg_chash   ON messages(content_hash);
+CREATE INDEX IF NOT EXISTS idx_msg_parent  ON messages(parent_id);
+`;
+
+/** עמודות שנוספו אחרי שה-DB כבר נוצר. ‏CREATE TABLE IF NOT EXISTS
+ *  אינו מוסיף אותן לטבלה קיימת — צריך ALTER מפורש. */
+const MIGRATIONS: Record<string, [string, string][]> = {
+  messages: [["model", "TEXT"], ["parent_id", "TEXT"], ["heavy", "BLOB"]],
+  sessions: [["model", "TEXT"], ["model_provider", "TEXT"],
+             ["parent_session_id", "TEXT"], ["usage", "TEXT"]],
+};
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const tsMs = (iso?: string | null): number | null => {
@@ -108,7 +122,7 @@ function extractUsage(s: DbSession): string | null {
   const keys = [
     "total_input_tokens", "total_output_tokens", "total_cache_read_tokens",
     "total_cache_creation_tokens", "grand_total_tokens", "approx_tokens",
-    "estimated_cost_usd", "api_call_count", "tool_call_count",
+    "estimated_cost_usd", "api_call_count", "tool_call_count", "tokens_reasoning",
   ];
   const u: Record<string, unknown> = {};
   for (const k of keys) if (s[k] != null) u[k] = s[k];
@@ -120,6 +134,10 @@ export class SessionsDb {
   private insMsg;
   private insFts;
   private insSess;
+  private selId;
+  private updMsg;
+  /** כמה שורות קיימות הועשרו (backfill) — לדיווח. */
+  enrichedTotal = 0;
 
   constructor(path: string) {
     mkdirSync(dirname(path), { recursive: true });
@@ -127,10 +145,24 @@ export class SessionsDb {
     this.db.exec("PRAGMA journal_mode=WAL");
     this.db.exec("PRAGMA synchronous=NORMAL");
     this.db.exec(SCHEMA);
+    this.migrate();
+    this.db.exec(INDEXES);
     this.insMsg = this.db.query(
       `INSERT OR IGNORE INTO messages
        (id, content_hash, session_id, seq, role, model, ts, parent_id, text, extra, heavy)
        VALUES ($id,$ch,$session,$seq,$role,$model,$ts,$parent,$text,$extra,$heavy)`,
+    );
+    // 🛑 INSERT OR IGNORE לבדו הופך backfill ל-no-op: שורה קיימת (אותו id
+    //    מסונתז) נדחית בשקט, והשדות החדשים לעולם לא מגיעים אליה. לכן
+    //    בודקים קיום, ומעשירים שורה קיימת ב-UPDATE נפרד.
+    this.selId = this.db.query(`SELECT rowid FROM messages WHERE id = $id`);
+    this.updMsg = this.db.query(
+      `UPDATE messages SET
+         model     = COALESCE($model, model),
+         parent_id = COALESCE($parent, parent_id),
+         extra     = COALESCE($extra, extra),
+         heavy     = COALESCE($heavy, heavy)
+       WHERE id = $id`,
     );
     // external-content FTS מאוכלס לפי rowid של השורה שזה-עתה נכתבה
     this.insFts = this.db.query(
@@ -143,6 +175,19 @@ export class SessionsDb {
        VALUES ($session,$machine,$cli,$project,$cwd,$title,$started,$ended,
                $model,$provider,$parent,$usage,$meta)`,
     );
+  }
+
+  /** מוסיף עמודות חסרות ל-DB שנוצר בסכמה ישנה. אידמפוטנטי. */
+  private migrate() {
+    for (const [table, cols] of Object.entries(MIGRATIONS)) {
+      const have = new Set(
+        (this.db.query(`PRAGMA table_info(${table})`).all() as { name: string }[])
+          .map((r) => r.name),
+      );
+      for (const [col, decl] of cols) {
+        if (!have.has(col)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${decl}`);
+      }
+    }
   }
 
   /** כותב סשן אחד (שורת sessions + שורות messages). אידמפוטנטי: הרצה חוזרת
@@ -159,9 +204,10 @@ export class SessionsDb {
       $usage: extractUsage(s), $meta: s.meta ? JSON.stringify(s.meta) : null,
     });
     let added = 0;
+    let enriched = 0;
     const tx = this.db.transaction((rows: DbMsg[]) => {
       rows.forEach((m, seq) => {
-        const text = m.content ?? "";
+        const text = m.lean ?? m.content ?? "";
         if (!text) return;
         const ch = sha(text);
         const id = sha(`${s.machine}\0${s.agent}\0${sid}\0${seq}\0${ch}`).slice(0, 32);
@@ -170,13 +216,21 @@ export class SessionsDb {
         if (m.created_at) extra.created_at_raw = m.created_at;
         // parent_id נייטיבי (parentUuid) — נשמר כפי שהוא, לא ממופה למזהה שלנו
         const parent = (extra.parentUuid ?? extra.parent_thread_id ?? null) as string | null;
+        const extraJson = Object.keys(extra).length ? JSON.stringify(extra) : null;
+        const heavyBlob = m.heavy?.length
+          ? deflateSync(Buffer.from(JSON.stringify(m.heavy), "utf8"))
+          : null;
+        if (this.selId.get({ $id: id })) {
+          // קיימת — רק מעשירים. הטקסט זהה (אותו content_hash) ⇒ FTS לא נוגע.
+          this.updMsg.run({ $id: id, $model: m.model ?? null, $parent: parent,
+            $extra: extraJson, $heavy: heavyBlob });
+          enriched++;
+          return;
+        }
         const res = this.insMsg.run({
           $id: id, $ch: ch, $session: sid, $seq: seq, $role: m.role,
           $model: m.model ?? null, $ts: tsMs(m.created_at), $parent: parent, $text: text,
-          $extra: Object.keys(extra).length ? JSON.stringify(extra) : null,
-          $heavy: m.heavy?.length
-            ? deflateSync(Buffer.from(JSON.stringify(m.heavy), "utf8"))
-            : null,
+          $extra: extraJson, $heavy: heavyBlob,
         });
         if (res.changes > 0) {
           added++;
@@ -187,6 +241,7 @@ export class SessionsDb {
       });
     });
     tx(msgs);
+    this.enrichedTotal += enriched;
     return added;
   }
 
