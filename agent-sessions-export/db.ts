@@ -40,6 +40,7 @@ export type DbSession = {
   ended_at?: string | null;
   primary_model?: string | null;
   meta?: Record<string, unknown>; // טוקנים/ספירות/וכו' → JSON
+  [k: string]: unknown;           // שדות נוספים מה-handler (jsonl_meta, total_*_tokens…)
 };
 
 const INDEXED_ROLES = new Set(["user", "assistant"]);
@@ -54,6 +55,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   title       TEXT,
   started_at  INTEGER,
   ended_at    INTEGER,
+  usage       TEXT,       -- JSON: tokens מצטברים (Claude) או cost/tokens (cass/opencode)
   meta        TEXT
 );
 -- שדות ברמת-סשן (cli, machine, project, cwd) חיים ב-sessions בלבד, לא כאן.
@@ -88,6 +90,21 @@ const tsMs = (iso?: string | null): number | null => {
   return Number.isNaN(t) ? null : t;
 };
 
+/** usage כ-JSON מכמה מקורות: Claude מצבר ב-jsonl_meta.usage; cass/opencode
+ *  נותנים שדות-טוקנים top-level. מחזיר null אם אין נתוני-usage. */
+function extractUsage(s: DbSession): string | null {
+  const jm = s.jsonl_meta as { usage?: unknown } | undefined;
+  if (jm?.usage) return JSON.stringify(jm.usage);
+  const keys = [
+    "total_input_tokens", "total_output_tokens", "total_cache_read_tokens",
+    "total_cache_creation_tokens", "grand_total_tokens", "approx_tokens",
+    "estimated_cost_usd", "api_call_count", "tool_call_count",
+  ];
+  const u: Record<string, unknown> = {};
+  for (const k of keys) if (s[k] != null) u[k] = s[k];
+  return Object.keys(u).length ? JSON.stringify(u) : null;
+}
+
 export class SessionsDb {
   private db: Database;
   private insMsg;
@@ -111,8 +128,8 @@ export class SessionsDb {
     );
     this.insSess = this.db.query(
       `INSERT OR REPLACE INTO sessions
-       (session_id, machine, cli, project, cwd, title, started_at, ended_at, meta)
-       VALUES ($session,$machine,$cli,$project,$cwd,$title,$started,$ended,$meta)`,
+       (session_id, machine, cli, project, cwd, title, started_at, ended_at, usage, meta)
+       VALUES ($session,$machine,$cli,$project,$cwd,$title,$started,$ended,$usage,$meta)`,
     );
   }
 
@@ -124,7 +141,7 @@ export class SessionsDb {
       $session: sid, $machine: s.machine, $cli: s.agent, $project: s.project,
       $cwd: s.workspace ?? null, $title: s.title ?? null,
       $started: tsMs(s.started_at), $ended: tsMs(s.ended_at),
-      $meta: s.meta ? JSON.stringify(s.meta) : null,
+      $usage: extractUsage(s), $meta: s.meta ? JSON.stringify(s.meta) : null,
     });
     let added = 0;
     const tx = this.db.transaction((rows: DbMsg[]) => {

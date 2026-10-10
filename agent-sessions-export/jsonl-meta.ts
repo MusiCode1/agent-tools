@@ -24,6 +24,14 @@ export type JsonlMeta = {
   primary_model?: string;
   started_at?: string;
   ended_at?: string;
+  usage?: {               // מצטבר מ-message.usage (רק ב-raw — נמחק אחרי 30 יום)
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_input_tokens: number;
+    cache_creation_input_tokens: number;
+    thinking_tokens: number;
+    assistant_turns: number;
+  };
 };
 
 /** מחלץ טקסט מ-message.content — מחרוזת או מערך חלקים. חלקי tool_use/
@@ -56,6 +64,8 @@ export function readJsonlSession(path: string): { meta: JsonlMeta; messages: Jso
   let text: string;
   try { text = require("node:fs").readFileSync(path, "utf8"); } catch { return null; }
   const messages: JsonlMsg[] = [];
+  const u = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0,
+    cache_creation_input_tokens: 0, thinking_tokens: 0, assistant_turns: 0 };
   for (const line of text.split("\n")) {
     const s = line.trim();
     if (!s) continue;
@@ -64,6 +74,16 @@ export function readJsonlSession(path: string): { meta: JsonlMeta; messages: Jso
     const t = o.type;
     if (t !== "user" && t !== "assistant") continue;
     const m = (o.message ?? {}) as Record<string, unknown>;
+    // צבירת usage — חינם, מעל ה-parse שממילא קורה (נמדד: תוספת בתוך רעש-המדידה)
+    const usage = m.usage as Record<string, any> | undefined;
+    if (usage) {
+      u.input_tokens += usage.input_tokens ?? 0;
+      u.output_tokens += usage.output_tokens ?? 0;
+      u.cache_read_input_tokens += usage.cache_read_input_tokens ?? 0;
+      u.cache_creation_input_tokens += usage.cache_creation_input_tokens ?? 0;
+      u.thinking_tokens += usage.output_tokens_details?.thinking_tokens ?? 0;
+      u.assistant_turns++;
+    }
     const content = partsText(m.content);
     if (!content) continue;
     const ts = typeof o.timestamp === "string" ? o.timestamp : undefined;
@@ -72,6 +92,7 @@ export function readJsonlSession(path: string): { meta: JsonlMeta; messages: Jso
     if (ts) { if (!meta.started_at) meta.started_at = ts; meta.ended_at = ts; }
     messages.push({ role: String(t), content, created_at: ts, model });
   }
+  if (u.assistant_turns > 0) meta.usage = u;
   return messages.length ? { meta, messages } : null;
 }
 
