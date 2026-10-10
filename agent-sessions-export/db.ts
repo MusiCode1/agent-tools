@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS messages (
   session_id   TEXT,
   seq          INTEGER,
   role         TEXT,
+  model        TEXT,
   ts           INTEGER,
   text         TEXT NOT NULL,
   extra        TEXT
@@ -119,8 +120,8 @@ export class SessionsDb {
     this.db.exec(SCHEMA);
     this.insMsg = this.db.query(
       `INSERT OR IGNORE INTO messages
-       (id, content_hash, session_id, seq, role, ts, text, extra)
-       VALUES ($id,$ch,$session,$seq,$role,$ts,$text,$extra)`,
+       (id, content_hash, session_id, seq, role, model, ts, text, extra)
+       VALUES ($id,$ch,$session,$seq,$role,$model,$ts,$text,$extra)`,
     );
     // external-content FTS מאוכלס לפי rowid של השורה שזה-עתה נכתבה
     this.insFts = this.db.query(
@@ -153,10 +154,9 @@ export class SessionsDb {
         const extra: Record<string, unknown> = {};
         if (m.author) extra.author = m.author;
         if (m.created_at) extra.created_at_raw = m.created_at;
-        if (m.model) extra.model = m.model;
         const res = this.insMsg.run({
           $id: id, $ch: ch, $session: sid, $seq: seq, $role: m.role,
-          $ts: tsMs(m.created_at), $text: text,
+          $model: m.model ?? null, $ts: tsMs(m.created_at), $text: text,
           $extra: Object.keys(extra).length ? JSON.stringify(extra) : null,
         });
         if (res.changes > 0) {
