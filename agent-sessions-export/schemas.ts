@@ -58,7 +58,9 @@ const CLAUDE: CliSchema = {
         isCompactSummary: "boolean", isApiErrorMessage: "boolean",
         error: ["string", "object"], isAbortedMidStream: "boolean",
         supersedesUuids: "array",
-
+        // נמדדו בגרסה/כותב אחר: session_id ב-snake_case לצד sessionId
+        session_id: "string", serverClassifierRequest: ["object", "string"],
+        serverClassifierContext: ["object", "string"], turnPosition: ["number", "string", "object"],
       },
     },
     {
@@ -78,15 +80,19 @@ const CLAUDE: CliSchema = {
         mcpMeta: "object", isVisibleInTranscriptOnly: "boolean",
         isCompactSummary: "boolean", isApiErrorMessage: "boolean",
         error: ["string", "object"], isAbortedMidStream: "boolean",
-        supersedesUuids: "array",
-
+        supersedesUuids: "array", apiErrorStatus: ["string", "number", "object"],
+        quotaLimits: "object",
+        // נמדדו בגרסה/כותב אחר: session_id ב-snake_case לצד sessionId
+        session_id: "string", serverClassifierRequest: ["object", "string"],
+        serverClassifierContext: ["object", "string"], turnPosition: ["number", "string", "object"],
       },
     },
   ],
   // נמדדו בקורפוס — קיימים ואיננו מחלצים מהם, אך אינם חריגה
   knownUnmodeled: ["summary", "system", "attachment", "agent-setting",
     "file-history-snapshot", "atis-latch", "last-prompt", "ai-title",
-    "queue-operation", "mode", "custom-title", "agent-name"],
+    "queue-operation", "mode", "custom-title", "agent-name",
+    "cost-state", "permission-mode"],
 };
 
 /** בלוקים בתוך message.content של Claude */
@@ -142,7 +148,24 @@ const CODEX: CliSchema = {
       required: { type: "string", timestamp: "string", payload: "object" },
       optional: { ordinal: "number", metadata: "object" },
     },
+    {
+      name: "token_usage_record",
+      required: { type: "string", timestamp: "string", payload: "object" },
+      optional: { ordinal: "number", metadata: "object" },
+    },
+    {
+      name: "inter_agent_communication_metadata",
+      required: { type: "string", timestamp: "string", payload: "object" },
+      optional: { ordinal: "number", metadata: "object" },
+    },
+    {
+      name: "world_state",
+      required: { type: "string", timestamp: "string", payload: "object" },
+      optional: { ordinal: "number", metadata: "object" },
+    },
   ],
+  // 🔑 token_usage_record הוא ה-usage של codex — 24,227 רשומות. התגלה ע"י
+  //    בדיקת-הסכמות עצמה, ולא ידענו עליו קודם.
   knownUnmodeled: [],
 };
 
@@ -186,7 +209,7 @@ const CURSOR_META: CliSchema = {
       optional: {
         agentId: "string", latestRootBlobId: "string", name: "string", mode: "string",
         isRunEverything: "boolean", createdAt: "number", blobEncryptionKey: ["string", "object"],
-        subagentInfo: "object",
+        subagentInfo: "object", approvalMode: "string", lastUsedModel: "string",
       },
     },
   ],
@@ -201,10 +224,10 @@ const OPENCODE_SESSION: CliSchema = {
       name: "*",
       required: { id: "string" },
       optional: {
-        project_id: "string", workspace_id: "string", parent_id: ["string", "null"],
+        project_id: "string", workspace_id: ["string", "null"], parent_id: ["string", "null"],
         fork_session_id: ["string", "null"], slug: "string", directory: "string",
         path: "string", title: "string", version: "string", share_url: ["string", "null"],
-        summary_additions: "number", summary_deletions: "number", summary_files: "number",
+        summary_additions: ["number", "null"], summary_deletions: ["number", "null"], summary_files: ["number", "null"],
         summary_diffs: ["string", "null"], metadata: ["string", "null"], cost: "number",
         tokens_input: "number", tokens_output: "number", tokens_reasoning: "number",
         tokens_cache_read: "number", tokens_cache_write: "number",

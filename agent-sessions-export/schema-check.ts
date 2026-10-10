@@ -30,6 +30,7 @@ const counts = new Map<string, number>();          // חריגות
 const examples = new Map<string, string[]>();      // דוגמאות
 const seen = new Map<string, number>();            // רשומות שנבדקו
 let totalRecords = 0;
+let nonMessageBlobs = 0;   // בלובי JSON שאינם הודעות
 
 function note(v: Violation, sample?: string) {
   const key = `${v.cli} · ${v.record} · ${v.field} · ${v.kind}${v.got ? ` (${v.got})` : ""}`;
@@ -111,19 +112,25 @@ if (!ONLY || ONLY === "cursor") {
     let db: Database; try { db = new Database(sp, { readonly: true }); } catch { continue; }
     try {
       db.exec("pragma busy_timeout=3000");
-      for (const row of db.query("select value from meta").all() as { value: unknown }[]) {
+      for (const row of db.query("select value from meta").iterate() as Iterable<{ value: unknown }>) {
         try {
           const b = typeof row.value === "string" ? Buffer.from(row.value, "hex") : Buffer.from(row.value as Uint8Array);
           const o = JSON.parse(b.toString("utf8"));
           if (o && typeof o === "object") checkObj(byCli("cursor.meta"), o, sp);
         } catch { /* ערך שאינו JSON — לא חריגת-סכמה */ }
       }
-      for (const row of db.query("select data from blobs").all() as { data: Uint8Array }[]) {
+      // 🛑 .all() טוען את כל הבלובים של המאגר לזיכרון בבת-אחת —
+      //    מאגר גדול הפיל את התהליך בשקט. .iterate() זורם.
+      for (const row of db.query("select data from blobs").iterate() as Iterable<{ data: Uint8Array }>) {
         const buf = Buffer.from(row.data);
         if (buf[0] !== 0x7b) continue;              // רק בלובי JSON; protobuf אינו בסכמה
         try {
           const o = JSON.parse(buf.toString("utf8"));
-          if (o && typeof o === "object" && !Array.isArray(o)) checkObj(byCli("cursor.blob"), o, sp);
+          if (!o || typeof o !== "object" || Array.isArray(o)) continue;
+          // 🔑 בלוב בלי role אינו הודעה — נמדד שאלה מטענים שרירותיים
+          //    (למשל רשומות תור-סלייסים). אין למדוד אותם מול סכמת-הודעה.
+          if (!(o as Record<string, unknown>).role) { nonMessageBlobs++; continue; }
+          checkObj(byCli("cursor.blob"), o, sp);
         } catch { /* לא JSON תקין */ }
       }
     } catch { /* מאגר נעול/פגום */ }
@@ -137,7 +144,7 @@ if (!ONLY || ONLY === "opencode") {
     const db = new Database(p, { readonly: true });
     try {
       db.exec("pragma busy_timeout=3000");
-      for (const row of db.query("select * from session").all() as Record<string, unknown>[]) {
+      for (const row of db.query("select * from session").iterate() as Iterable<Record<string, unknown>>) {
         checkObj(byCli("opencode.session"), row, p);
       }
     } catch { /* ignore */ }
@@ -146,7 +153,8 @@ if (!ONLY || ONLY === "opencode") {
 }
 
 // ───── דיווח ─────
-console.log(`נבדקו ${totalRecords.toLocaleString("he-IL")} רשומות`);
+console.log(`נבדקו ${totalRecords.toLocaleString("he-IL")} רשומות` +
+  (nonMessageBlobs ? ` · ${nonMessageBlobs.toLocaleString("he-IL")} בלובי-JSON שאינם הודעות (דולגו)` : ""));
 for (const [cli, n] of [...seen].sort((a, b) => b[1] - a[1])) {
   console.log(`  ${cli.padEnd(20)} ${n.toLocaleString("he-IL")}`);
 }
