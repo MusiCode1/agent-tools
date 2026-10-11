@@ -36,12 +36,21 @@ grok · Gemini/Antigravity · pi · omp · hermes · openclaw · cline.
 (תאריך · role · מודל · CLI · פרויקט · cwd · פקודת-המשך).
 
 ```bash
-bun ~/Projects/agent-sessions-export/sq.ts "שיבוץ"
-bun sq.ts "שיבוץ" --role user --project tzlev --since 2026-09-01 --limit 5
-bun sq.ts --session <id>     # הסשן המלא
-bun sq.ts --stats            # סקירת הקורפוס
-bun sq.ts "x" --json         # פלט למכונה
+sq "שיבוץ"                                   # יש עטיפה ב-PATH
+sq "שיבוץ" --role user --project tzlev --since 2026-09-01 --limit 5
+sq --session <id>     # הסשן המלא
+sq --stats            # סקירת הקורפוס
+sq "x" --json         # פלט למכונה
 ```
+
+**נתיב ה-DB** נקבע לפי: `--db` → ‏`$AGENT_SESSIONS_DB` → ‏`db_path`
+בקונפיג (`~/.config/agent-sessions/config.json`) → ברירת-מחדל
+`~/.cache/agent-sessions/sessions.db`.
+
+🛑 **בקונטיינר של mission13 אין להשאיר אותו ב-`~/.cache`** — שם זה **אינו
+bind**, וה-DB נמחק בכל restart (ובנייה מחדש היא ~28 דקות). שם `db_path`
+מצביע ל-`~/projects/.agent-sessions/`, שהוא כן bind. אותו שיקול חל על
+העטיפה: היא חיה **בתוך הריפו** ולא ב-`~/.local/bin`, שגם הוא אינו bind.
 
 🔑 **הטוקנייזר הוא `trigram` — תת-מחרוזת, לא מילה שלמה.** ולכן, בניגוד
 ל-recoll ול-cass, **`שעות` מוצא גם `בשעות`** — אותיות-שימוש אינן מפריעות.

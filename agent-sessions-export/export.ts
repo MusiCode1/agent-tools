@@ -26,6 +26,7 @@ type Config = {
   default: string;
   routes: Route[];
   cass_db?: string;
+  db_path?: string;
 };
 
 const HOME = homedir();
@@ -41,9 +42,16 @@ const OUT = OUT_RAW as "files" | "db" | "both";
 const DB_BACKFILL = process.argv.includes("--db-backfill");
 const WANT_FILES = DB_BACKFILL ? false : OUT !== "db";
 const WANT_DB = DB_BACKFILL ? true : OUT !== "files";
-const SESSIONS_DB_PATH =
-  process.argv.find((a) => a.startsWith("--db-path="))?.split("=")[1] ??
-  join(HOME, ".cache", "agent-sessions", "sessions.db");
+/** נתיב ה-DB: דגל → env → config.db_path → ברירת-מחדל.
+ *  🛑 בקונטיינר, ~/.cache אינו bind — DB שם נמחק בכל restart.
+ *  ~/.config/agent-sessions כן bind, ולכן db_path בקונפיג הוא הדרך
+ *  להצביע לנתיב ששורד. */
+function resolveDbPath(cfgDbPath?: string): string {
+  return process.argv.find((a) => a.startsWith("--db-path="))?.split("=")[1]
+    ?? process.env.AGENT_SESSIONS_DB
+    ?? cfgDbPath
+    ?? join(HOME, ".cache", "agent-sessions", "sessions.db");
+}
 const REBUILD_DB = process.argv.includes("--rebuild-db");
 
 /** גרסת סכימת הייצוא. העלאה גורמת לכתיבה מחדש של קבצים ישנים בריצה הבאה,
@@ -68,13 +76,17 @@ for (const r of cfg.project_roots) {
 }
 if (!cfg.repos[cfg.default]) die(`default '${cfg.default}' אינו ברשימת repos`);
 
+const SESSIONS_DB_PATH = resolveDbPath((cfg as { db_path?: string }).db_path);
+/** עקיפת שם-המכונה — לטעינת ארכיון של מכונה אחרת לאותו DB. */
+const MACHINE = process.argv.find((a) => a.startsWith("--machine="))?.split("=")[1] ?? cfg.machine;
+
 // ---------- rebuild-db: בונה את ה-DB מהארכיון הקיים (meta/*.json), בלי cass ----------
 if (REBUILD_DB) {
   const sdb = new SessionsDb(SESSIONS_DB_PATH);
   let files = 0, added = 0, bad = 0;
   for (const root of Object.values(cfg.repos)) {
     if (!root) continue;
-    const metaDir = join(root, "data", cfg.machine, "meta");
+    const metaDir = join(root, "data", MACHINE, "meta");
     if (!existsSync(metaDir)) continue;
     for (const rel of new Bun.Glob("**/*.json").scanSync(metaDir)) {
       try {
@@ -86,7 +98,7 @@ if (REBUILD_DB) {
     }
   }
   sdb.close();
-  console.log(`rebuild-db → ${SESSIONS_DB_PATH}\n  ${files} קבצי-מטא · ${added} הודעות חדשות · ${bad} דילוגים`);
+  console.log(`rebuild-db [${MACHINE}] → ${SESSIONS_DB_PATH}\n  ${files} קבצי-מטא · ${added} הודעות חדשות · ${bad} דילוגים`);
   process.exit(0);
 }
 

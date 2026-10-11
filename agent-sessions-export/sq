@@ -1,0 +1,5 @@
+#!/bin/sh
+# עטיפה נתיב-עצמאית ל-sq. חיה בתוך הריפו (bind בקונטיינר) ⇒ שורדת restart.
+# readlink -f ולא dirname $0 — אחרת קריאה דרך סימלינק מחפשת ליד הסימלינק.
+SELF="$(readlink -f "$0")"
+exec "${BUN:-bun}" "$(dirname "$SELF")/sq.ts" "$@"

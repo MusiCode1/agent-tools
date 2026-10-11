@@ -17,7 +17,7 @@
  *    (מה ש-unicode61 ו-cass מפספסים). מינימום 3 תווים בשאילתה.
  */
 import { Database } from "bun:sqlite";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -36,7 +36,15 @@ const query = argv.filter((a) => !a.startsWith("--")).filter((a, i, arr) => {
   return !(prev && prev.startsWith("--") && !prev.includes("="));
 }).join(" ").trim();
 
-const DB = flag("db", join(HOME, ".cache", "agent-sessions", "sessions.db"))!;
+/** נתיב ה-DB: דגל → env → config.db_path → ברירת-מחדל. זהה ל-export.ts. */
+function cfgDbPath(): string | undefined {
+  try {
+    const c = JSON.parse(readFileSync(join(HOME, ".config", "agent-sessions", "config.json"), "utf8"));
+    return typeof c.db_path === "string" ? c.db_path : undefined;
+  } catch { return undefined; }
+}
+const DB = flag("db") ?? process.env.AGENT_SESSIONS_DB ?? cfgDbPath()
+  ?? join(HOME, ".cache", "agent-sessions", "sessions.db");
 if (!existsSync(DB)) {
   console.error(`✗ אין DB ב-${DB}\n  לבנייה: bun export.ts --rebuild-db && bun export.ts --db-backfill --apply`);
   process.exit(1);
