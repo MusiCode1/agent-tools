@@ -133,10 +133,32 @@ Bun.serve({
     const payload = buildPayload(db, fromMs, toMs, work);
     const ms = (performance.now() - t0).toFixed(0);
 
+    // 🛑 שני טווחי-תאריכים בלתי-תלויים, וזה מה ששבר את התצוגה:
+    //    השרת בוחר לפי `?days=`, אבל **התבנית מסננת שוב בצד-הלקוח** לפי
+    //    שני שדות `<input type=date>` שברירות-המחדל שלהן היו קשיחות —
+    //    `2026-09-10` ו-`2026-10-05`, שאריות מתקופת-החיוב שלשמה נבנתה.
+    //
+    //    ⇒ הדף צייר עמודות מ-10/09, בעוד השרת שלח מ-28/09 בלבד, וכל
+    //    העמודות שביניהן נראו **ריקות** — לא "חסרות-נתון". וגם הכיוון
+    //    ההפוך: כל מה שאחרי 05/10 נחתך בשקט.
+    //    נצרב 12/10/2026 — המשתמש שאל "למה עד ה-27/9 הכל ריק".
+    //
+    //    התיקון: השדות מאוכלסים מטווח המטען בפועל, כך שיש **טווח אחד**.
+    // 🛑 בלי spread: ‏`Math.min(...arr)` על 233 אלף אירועים חורג ממגבלת
+    //    הארגומנטים ומפיל את המחסנית. לולאה אחת, מעבר יחיד.
+    const dayOf = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+    let tMin = Infinity, tMax = -Infinity;
+    for (const e of payload.events) {
+      const t = e[0] as number;
+      if (t < tMin) tMin = t;
+      if (t > tMax) tMax = t;
+    }
+    const lo = payload.events.length ? dayOf(tMin) : dayOf(fromMs + TZ_OFFSET_MS);
+    const hi = payload.events.length ? dayOf(tMax) : dayOf(toMs + TZ_OFFSET_MS);
     const banner = `<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;
       padding:8px 12px;margin:12px 18px;font-size:12.5px">
       תצוגת <b>פעילות</b> מתוך <code>sessions.db</code> — ${payload.events.length.toLocaleString("he-IL")}
-      הודעות (user+assistant) ב-${days} הימים האחרונים · נבנה ב-${ms}ms.
+      הודעות (user+assistant) · <b>${lo} → ${hi}</b> · נבנה ב-${ms}ms.
       🛑 <b>אלה אינם מספרי-חיוב</b>: קורפוס-השעות עבר סינון-אוטומציה והפרדת-מפעיל, וה-DB לא.${
       noTsTotal ? `<br>🛑 <b>${noTsTotal.toLocaleString("he-IL")} הודעות אינן כאן כלל</b> — אין להן חותמת-זמן
       (${noTs.map((r) => `${r.cli} ${r.n.toLocaleString("he-IL")}`).join(" · ")}).
@@ -150,6 +172,8 @@ Bun.serve({
     //    זנב-התבנית 16 פעמים. replacer כפונקציה אינו מפרש כלום.
     const body = html
       .replace("/*__DATA__*/null", () => dataJson)
+      .replace('id="from" value="2026-09-10"', () => `id="from" value="${lo}"`)
+      .replace('id="to" value="2026-10-05"', () => `id="to" value="${hi}"`)
       .replace('<div class="panel summary"', () => banner + '<div class="panel summary"');
     // gzip חוסך פי-כמה בלי שום שינוי בלקוח
     if (!(req.headers.get("accept-encoding") ?? "").includes("gzip")) {
