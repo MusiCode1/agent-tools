@@ -49,9 +49,9 @@ export type DbSession = {
   [k: string]: unknown;           // שדות נוספים מה-handler (jsonl_meta, total_*_tokens…)
 };
 
-const INDEXED_ROLES = new Set(["user", "assistant"]);
+export const INDEXED_ROLES = new Set(["user", "assistant"]);
 
-const SCHEMA = `
+export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS export_state (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS sessions (
   session_id  TEXT PRIMARY KEY,
@@ -94,7 +94,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
 );
 `;
 
-const INDEXES = `
+export const INDEXES = `
 CREATE INDEX IF NOT EXISTS idx_msg_session ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_msg_ts      ON messages(ts);
 CREATE INDEX IF NOT EXISTS idx_msg_chash   ON messages(content_hash);
