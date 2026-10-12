@@ -54,7 +54,10 @@ db.exec("CREATE TABLE IF NOT EXISTS export_state (key TEXT PRIMARY KEY, value TE
 const WM_KEY = "dump_watermark";
 const since = flag("since") !== undefined
   ? Number(flag("since"))
-  : Number((db.query("select value from export_state where key=$k").get({ $k: WM_KEY }) as any)?.value ?? 0);
+  : Number((db.query("select value from export_state where key=$k").get({ $k: WM_KEY }) as any)?.value ?? -1);
+// 🛑 ‏-1 ולא 0: שורות שקדמו לעמודת `updated_at` נושאות NULL, ו-COALESCE מחזיר
+//    עבורן 0. סף 0 היה **משמיט את כל הארכיון ההיסטורי בשקט** — הדלתא הראשונה
+//    הייתה יוצאת ריקה ונראית כמו "אין שינוי". נמדד 12/10/2026 על mission13.
 
 /** ציטוט ערך ל-SQL. ‏BLOB → X'..' ‏(hex), ‏NULL, מספר, או מחרוזת עם '' מוכפל. */
 function q(v: unknown): string {
