@@ -48,8 +48,11 @@ const DB = flag("db") ?? process.env.AGENT_SESSIONS_DB ?? cfgDbPath()
 const DIR = flag("dir");
 const DRY = has("dry");
 /** תקרת-קטע ב-MB **לא-דחוסים**. ‏🛑 GitHub דוחה קובץ מעל 100MB, ומזהיר מעל 50.
- *  נמדד 12/10/2026: יחס דחיסה 2.63:1 ⇒ ‏120MB גולמי ≈ 46MB ארוז. */
-const MAX_MB = Number(flag("max-mb", "120"));
+ *  נמדד 12/10/2026 על 6 קטעים: היחס **אינו אחיד** — ‏2.63:1 בממוצע, אבל
+ *  ‏1.875:1 בקטע שרוב-רובו `heavy` (‏zlib שכבר דחוס אינו נדחס שוב), ושם
+ *  ‏120MB גולמי הפיקו **64MB ארוז**. ⇒ התקרה נגזרת מהמקרה הגרוע:
+ *  ‏90MB × 1.875 ≈ 48MB ארוז. */
+const MAX_MB = Number(flag("max-mb", "90"));
 if (!DIR && !DRY) { console.error("✗ חסר --dir <תיקיית dumps>  (או --dry)"); process.exit(2); }
 if (!existsSync(DB)) { console.error(`✗ אין DB ב-${DB}`); process.exit(1); }
 
