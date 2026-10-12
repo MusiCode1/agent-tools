@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<title>שעות עבודה — עמודה ליום</title>
+<style>
+:root{
+  --bg:#f6f7f9; --panel:#fff; --line:#d8dce3; --ink:#1d2430; --muted:#697180;
+  --grid:#e9ecf1; --accent:#2a6fd6; --fixed:#8a5cf6; --warn:#c2410c;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:14px/1.5 "Segoe UI",Rubik,Arial,sans-serif}
+header{padding:14px 18px 6px}
+h1{margin:0 0 2px;font-size:19px}
+.sub{color:var(--muted);font-size:12px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  margin:12px 18px;padding:12px 14px}
+.controls{display:flex;flex-wrap:wrap;gap:18px 26px;align-items:flex-start}
+.ctl{min-width:210px}
+.ctl label{display:block;font-weight:600;margin-bottom:4px;font-size:13px}
+.ctl .val{font-weight:400;color:var(--accent)}
+input[type=range]{width:100%;accent-color:var(--accent)}
+.radios label,.checks label{font-weight:400;display:flex;gap:6px;align-items:center;
+  margin:3px 0;font-size:13px}
+input[type=date]{font:inherit;padding:3px 6px;border:1px solid var(--line);border-radius:6px}
+.summary{display:flex;flex-wrap:wrap;gap:10px}
+.chip{background:var(--panel);border:1px solid var(--line);border-radius:9px;
+  padding:7px 11px;min-width:128px}
+.chip b{display:block;font-size:17px;font-variant-numeric:tabular-nums}
+.chip span{color:var(--muted);font-size:11.5px}
+.chartwrap{margin:12px 18px;display:flex;gap:0;align-items:flex-start}
+.axis{flex:0 0 52px;position:relative;font-size:11px;color:var(--muted);
+  font-variant-numeric:tabular-nums;padding-top:52px}
+.axis div{position:absolute;inset-inline-end:6px;transform:translateY(-50%)}
+.scroller{flex:1 1 auto;overflow-x:auto;padding-bottom:8px}
+.cols{display:flex;gap:6px;align-items:flex-start;min-width:max-content}
+.col{flex:0 0 76px}
+.colhead{text-align:center;font-size:11.5px;line-height:1.35;margin-bottom:4px;
+  height:48px;overflow:hidden}
+.colhead .d{font-weight:700}
+.colhead .t{color:var(--accent);font-variant-numeric:tabular-nums}
+.colhead .z{color:var(--muted)}
+.track{position:relative;background:var(--panel);border:1px solid var(--line);
+  border-radius:7px;overflow:hidden}
+.hr{position:absolute;inset-inline:0;height:1px;background:var(--grid)}
+.hr.major{background:#dfe3ea}
+.blk{position:absolute;inset-inline:3px;border-radius:4px;cursor:default;
+  border:1px solid rgba(0,0,0,.18)}
+.blk.fx{background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.45) 0 4px,transparent 4px 8px)}
+.tick{position:absolute;inset-inline:3px;height:2px;background:#aab2c0;opacity:.75}
+.tip{position:fixed;z-index:9;max-width:320px;background:#111827;color:#f3f4f6;
+  padding:8px 10px;border-radius:8px;font-size:12px;line-height:1.5;
+  pointer-events:none;display:none;box-shadow:0 6px 20px rgba(0,0,0,.25)}
+.tip b{color:#fff}
+#detail{display:none}
+#detail h3{margin:0 0 2px;font-size:15px}
+#detail .dhint{color:var(--muted);font-size:12px;margin-bottom:8px}
+.msg{border-top:1px solid var(--line);padding:6px 2px;display:flex;gap:9px;align-items:flex-start}
+.msg:first-child{border-top:0}
+.msg .mt{flex:0 0 118px;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums;line-height:1.5}
+.msg .mt b{color:var(--ink);display:block}
+.msg .mx{flex:1 1 auto;white-space:pre-wrap;word-break:break-word;font-size:13px}
+.msg.personal .mx{color:#8a6d3b}
+.msg .pill{display:inline-block;font-size:10.5px;border-radius:5px;padding:1px 6px;
+  margin-inline-start:6px;vertical-align:1px;color:#fff}
+.msglist{max-height:460px;overflow:auto}
+.blk{cursor:pointer}
+.blk.sel{outline:2px solid #111827;outline-offset:1px}
+.colhead .d{cursor:pointer}
+.colhead .d:hover{text-decoration:underline}
+.legend{display:flex;flex-wrap:wrap;gap:8px 14px;font-size:12px;color:var(--muted)}
+.legend i{display:inline-block;width:11px;height:11px;border-radius:3px;
+  margin-inline-end:5px;vertical-align:-1px}
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+th,td{border-bottom:1px solid var(--line);padding:4px 7px;text-align:start;
+  font-variant-numeric:tabular-nums}
+th{background:#eef1f5;position:sticky;top:0}
+.tablewrap{max-height:420px;overflow:auto;margin-top:8px}
+details summary{cursor:pointer;font-weight:600}
+.note{color:var(--muted);font-size:12px;margin-top:8px}
+.warn{color:var(--warn)}
+</style>
+</head>
+<body>
+<header>
+  <h1>שעות עבודה — עמודה ליום</h1>
+  <div class="sub" id="meta"></div>
+</header>
+
+<div class="panel controls">
+  <div class="ctl">
+    <label>סף איחוד בלוקים — <span class="val" id="gapV">30 דק'</span></label>
+    <input type="range" id="gap" min="5" max="120" step="1" value="30">
+    <div class="sub">פער עד הסף בין הודעות נחשב רצף אחד</div>
+  </div>
+  <div class="ctl">
+    <label>בלוק מינימלי — <span class="val" id="minV">5 דק'</span></label>
+    <input type="range" id="min" min="0" max="60" step="1" value="0">
+    <div class="sub">חלון קצר מזה מושמט מהחיוב</div>
+  </div>
+  <div class="ctl">
+    <label>תוספת קבועה לבלוק — <span class="val" id="padV">0 דק'</span></label>
+    <input type="range" id="pad" min="0" max="45" step="1" value="0">
+    <div class="sub">עבודה לפני ההודעה הראשונה ואחרי האחרונה</div>
+  </div>
+  <div class="ctl radios">
+    <label style="font-weight:600">שיטת החיוב</label>
+    <label><input type="radio" name="mode" value="window"> חלון מלא (הודעות עבודה בלבד)</label>
+    <label><input type="radio" name="mode" value="relative" checked> יחסי לפי שיעור הודעות העבודה</label>
+  </div>
+  <div class="ctl checks">
+    <label style="font-weight:600">תצוגה</label>
+    <label><input type="checkbox" id="useFixed" checked> חלונות ידניים (15/09 · 23/09)</label>
+    <label><input type="checkbox" id="showOther"> סמן הודעות שאינן עבודה</label>
+  </div>
+  <div class="ctl">
+    <label>טווח תאריכים</label>
+    <div style="display:flex;gap:6px;align-items:center">
+      <input type="date" id="from" value="2026-09-10">
+      <span class="sub">עד</span>
+      <input type="date" id="to" value="2026-10-05">
+    </div>
+    <div class="sub" style="margin-top:6px">
+      <a href="#" id="presetSep">10/09–30/09</a> ·
+      <a href="#" id="presetAll">הכול</a>
+    </div>
+  </div>
+  <div class="ctl">
+    <label>גובה שעה — <span class="val" id="zoomV">26px</span></label>
+    <input type="range" id="zoom" min="10" max="70" step="2" value="26">
+  </div>
+</div>
+
+<div class="panel summary" id="summary"></div>
+
+<div class="chartwrap">
+  <div class="axis" id="axis"></div>
+  <div class="scroller"><div class="cols" id="cols"></div></div>
+</div>
+
+<div class="panel">
+  <div class="legend" id="legend"></div>
+  <div class="note" id="caveat"></div>
+</div>
+
+<div class="panel" id="detail">
+  <h3 id="detailTitle"></h3>
+  <div class="dhint" id="detailHint"></div>
+  <div class="msglist" id="msglist"></div>
+</div>
+
+<div class="panel">
+  <details id="tbl">
+    <summary>טבלת בלוקים</summary>
+    <div class="tablewrap"><table id="blocks"></table></div>
+  </details>
+</div>
+
+<div class="tip" id="tip"></div>
+
+<script>
+const D = /*__DATA__*/null;
+const H = 3600000, DAY = 86400000, DAY_START = 4 * H;
+const PALETTE = ['#2a6fd6','#0f9d58','#d9822b','#b4387f','#0b8f93','#6b6fd6',
+                 '#a8691f','#4b7d2f','#8a5cf6','#c2410c'];
+const colorOf = i => PALETTE[i % PALETTE.length];
+
+const $ = id => document.getElementById(id);
+const pad2 = n => String(n).padStart(2, '0');
+function hms(sec){
+  sec = Math.max(0, Math.round(sec));
+  return Math.floor(sec/3600) + ':' + pad2(Math.floor(sec%3600/60)) + ':' + pad2(sec%60);
+}
+function hoursTxt(sec){ return (sec/3600).toFixed(2); }
+function clock(ms){ const d = new Date(ms); return pad2(d.getUTCHours()) + ':' + pad2(d.getUTCMinutes()); }
+function clockS(ms){ return clock(ms) + ':' + pad2(new Date(ms).getUTCSeconds()); }
+const workday = ms => Math.floor((ms - DAY_START) / DAY);
+function dayLabel(idx){
+  const d = new Date(idx * DAY);
+  const wd = ['א','ב','ג','ד','ה','ו','ש'][d.getUTCDay()];
+  return { date: pad2(d.getUTCDate()) + '/' + pad2(d.getUTCMonth()+1), wd: 'יום ' + wd,
+           iso: d.toISOString().slice(0,10) };
+}
+const dayFromISO = iso => Math.floor(Date.parse(iso + 'T00:00:00Z') / DAY);
+
+function cfg(){
+  return {
+    gap: +$('gap').value, minBlk: +$('min').value, pad: +$('pad').value,
+    mode: document.querySelector('input[name=mode]:checked').value,
+    useFixed: $('useFixed').checked, showOther: $('showOther').checked,
+    from: dayFromISO($('from').value), to: dayFromISO($('to').value),
+    zoom: +$('zoom').value,
+  };
+}
+
+function compute(c){
+  const inRange = ms => { const w = workday(ms); return w >= c.from && w <= c.to; };
+  const fixed = (c.useFixed ? D.fixed : []).filter(f => inRange(f.start));
+  const insideFixed = ms => fixed.some(f => ms >= f.start && ms <= f.end);
+  const crosses = (a, b) => fixed.some(f => (a < f.start && f.start <= b) || (a < f.end && f.end <= b));
+
+  const all = D.events.filter(e => inRange(e[0]));
+  const base = (c.mode === 'window' ? all.filter(e => e[2] === 1) : all)
+                 .filter(e => !insideFixed(e[0]));
+
+  const groups = [];
+  for (const e of base){
+    const g = groups[groups.length - 1];
+    const prev = g && g[g.length - 1][0];
+    if (!g || (e[0] - prev) > c.gap * 60000 || crosses(prev, e[0])
+        || workday(e[0]) !== workday(prev)) groups.push([e]);
+    else g.push(e);
+  }
+
+  const blocks = [], dropped = [];
+  for (const g of groups){
+    const work = g.filter(e => e[2] === 1);
+    if (!work.length) continue;
+    const start = g[0][0], end = g[g.length - 1][0], elapsed = (end - start) / 1000;
+    const projCount = {};
+    for (const e of work) projCount[D.projects[e[1]]] = (projCount[D.projects[e[1]]] || 0) + 1;
+    const projs = Object.entries(projCount).sort((a,b) => b[1]-a[1]).map(p => p[0]);
+    const rec = { start, end, elapsed, n: g.length, workN: work.length,
+      projs, projIdx: work[0][1], day: workday(start),
+      machines: [...new Set(work.map(e => D.machines[e[3]]))],
+      clis: [...new Set(work.map(e => D.kinds[e[4]]))], fixed: false, items: g };
+    rec.dominant = projs[0];
+    if (elapsed < c.minBlk * 60){ dropped.push(rec); continue; }
+    rec.charge = (c.mode === 'window' ? elapsed : elapsed * work.length / g.length) + c.pad * 60;
+    blocks.push(rec);
+  }
+  for (const f of fixed){
+    const sec = (f.end - f.start) / 1000;
+    blocks.push({ start: f.start, end: f.end, elapsed: sec, charge: sec, n: 0, workN: 0,
+      projs: [f.project], dominant: f.project, projIdx: D.projects.indexOf(f.project),
+      day: workday(f.start), machines: [], clis: [], fixed: true, note: f.note, items: [] });
+  }
+  blocks.sort((a,b) => a.start - b.start);
+  const others = all.filter(e => e[2] === 0);
+  return { blocks, dropped, others, fixed };
+}
+
+function render(){
+  const c = cfg();
+  $('gapV').textContent = c.gap + " דק'";
+  $('minV').textContent = c.minBlk + " דק'";
+  $('padV').textContent = c.pad + " דק'";
+  $('zoomV').textContent = c.zoom + 'px';
+
+  const { blocks, dropped, others, fixed } = compute(c);
+  const height = c.zoom * 24;
+
+  // ציר השעות
+  const axis = $('axis');
+  axis.style.height = (height + 52) + 'px';
+  axis.innerHTML = Array.from({length: 25}, (_, i) => {
+      const hour = (4 + i) % 24;
+      return `<div style="top:${52 + i * c.zoom}px">${pad2(hour)}:00</div>`;
+    }).join('');
+
+  // עמודות
+  const byDay = new Map();
+  for (let d = c.from; d <= c.to; d++) byDay.set(d, []);
+  for (const b of blocks) if (byDay.has(b.day)) byDay.get(b.day).push(b);
+  const otherByDay = new Map();
+  for (const e of others){
+    const d = workday(e[0]);
+    if (!otherByDay.has(d)) otherByDay.set(d, []);
+    otherByDay.get(d).push(e);
+  }
+
+  let html = '';
+  let total = 0, sep = 0, rest = 0;
+  const dayTotals = [];
+  for (const [d, list] of byDay){
+    const sum = list.reduce((s, b) => s + b.charge, 0);
+    total += sum;
+    const lab = dayLabel(d);
+    if (lab.iso <= '2026-09-30') sep += sum; else rest += sum;
+    dayTotals.push([lab, sum, list.length]);
+    const bars = list.map((b, i) => {
+      const top = ((b.start - DAY_START) % DAY) / DAY * height;
+      const h = Math.max(2, (b.end - b.start) / DAY * height);
+      const col = colorOf(b.fixed ? 8 : b.projIdx);
+      return `<div class="blk${b.fixed ? ' fx' : ''}" data-k="${d}:${i}"
+        style="top:${top}px;height:${h}px;background:${col}bb"></div>`;
+    }).join('');
+    const ticks = c.showOther ? (otherByDay.get(d) || []).map(e => {
+      const top = ((e[0] - DAY_START) % DAY) / DAY * height;
+      return `<div class="tick" style="top:${top}px"></div>`;
+    }).join('') : '';
+    const lines = Array.from({length: 25}, (_, i) =>
+      `<div class="hr${i % 6 === 0 ? ' major' : ''}" style="top:${i * c.zoom}px"></div>`).join('');
+    html += `<div class="col"><div class="colhead">
+        <div class="d" data-day="${d}">${lab.date}</div><div class="z">${lab.wd}</div>
+        <div class="t">${sum ? hms(sum) : '—'}</div></div>
+      <div class="track" style="height:${height}px">${lines}${ticks}${bars}</div></div>`;
+  }
+  $('cols').innerHTML = html;
+  window.__blocks = byDay;
+
+  // סיכום
+  const already = D.already_in_sheet_seconds;
+  const addable = Math.max(0, total - (c.useFixed ? already : 0));
+  $('summary').innerHTML = [
+    ['סך הכל בטווח', hms(total), hoursTxt(total) + ' שעות'],
+    ['₪ לפי ' + D.rate + ' לשעה', '₪' + (total / 3600 * D.rate).toFixed(2), 'כולל מה שבגיליון'],
+    ['תוספת מוצעת לגיליון', hms(addable), c.useFixed ? 'בניכוי 4 שעות שכבר רשומות' : 'בלי חלונות ידניים'],
+    ['10/09–30/09', hms(sep), hoursTxt(sep) + ' שעות'],
+    ['01/10 והלאה', hms(rest), hoursTxt(rest) + ' שעות'],
+    ['בלוקים', blocks.length, fixed.length + ' מהם ידניים'],
+    ['הושמטו כקצרים', dropped.length, 'מתחת ל-' + c.minBlk + " דק'"],
+  ].map(([t, v, s]) => `<div class="chip"><span>${t}</span><b>${v}</b><span>${s}</span></div>`).join('');
+
+  // מפתח צבעים
+  const used = [...new Set(blocks.filter(b => !b.fixed).map(b => b.projIdx))];
+  $('legend').innerHTML = used.map(i =>
+      `<span><i style="background:${colorOf(i)}"></i>${D.projects[i]}</span>`).join('') +
+    `<span><i style="background:${colorOf(8)}"></i>חלון ידני</span>` +
+    (c.showOther ? '<span><i style="background:#aab2c0"></i>הודעה שאינה עבודה</span>' : '');
+
+  $('caveat').innerHTML = 'תחילת בלוק וסיומו הם חותמות ההודעה הראשונה והאחרונה בו — ' +
+    '<span class="warn">הם אינם הוכחת נוכחות רציפה</span>. ' +
+    'יום עבודה מתחיל ב-04:00, ולכן מקטע שאחרי חצות מופיע בעמודת היום הקודם. ' +
+    'מושמטים: הודעות סוכן ואוטומציה, שעות יצחק, נושאים אישיים ופיתוח drive-coding. ' +
+    'מקור: ' + D.events.length.toLocaleString('he-IL') + ' הודעות אדם מ-Claude · Cursor · Codex · ACP · OpenCode, בשתי המכונות.';
+
+  // טבלה
+  if ($('tbl').open) renderTable(blocks);
+}
+
+function renderTable(blocks){
+  const head = ['יום','תחילה','סיום','חלון','חיוב','הודעות','עבודה','פרויקט','מכונה','CLI'];
+  const rows = blocks.map(b => {
+    const lab = dayLabel(b.day);
+    return `<tr><td>${lab.date}</td><td>${clockS(b.start)}</td><td>${clockS(b.end)}</td>
+      <td>${hms(b.elapsed)}</td><td>${hms(b.charge)}</td><td>${b.n || '—'}</td>
+      <td>${b.workN || '—'}</td><td>${b.projs.join(', ')}</td>
+      <td>${b.machines.join(', ') || '—'}</td><td>${b.clis.join(', ') || '—'}</td></tr>`;
+  }).join('');
+  $('blocks').innerHTML = '<thead><tr>' + head.map(h => `<th>${h}</th>`).join('') +
+    '</tr></thead><tbody>' + rows + '</tbody>';
+}
+
+// פאנל הודעות — לחיצה על בלוק או על כותרת יום
+const PROJCOL = i => colorOf(i);
+function msgRow(e){
+  const work = e[2] === 1;
+  const proj = D.projects[e[1]];
+  const col = work ? colorOf(e[1]) : '#9aa2b1';
+  const pill = `<span class="pill" style="background:${col}">${work ? proj : 'אישי'}</span>`;
+  const txt = (e[5] || '').trim() || '(ריק)';
+  return `<div class="msg${work ? '' : ' personal'}">
+    <div class="mt"><b>${clockS(e[0])}</b>${D.machines[e[3]]} · ${D.kinds[e[4]]}${pill}</div>
+    <div class="mx">${escapeHtml(txt)}</div></div>`;
+}
+function escapeHtml(t){
+  return t.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+}
+function showBlock(b){
+  const lab = dayLabel(b.day);
+  $('detailTitle').textContent = `${lab.date} ${lab.wd} · ${clock(b.start)}–${clock(b.end)}`;
+  if (b.fixed){
+    $('detailHint').textContent = 'חלון ידני — ' + b.note;
+    $('msglist').innerHTML = '';
+  } else {
+    $('detailHint').innerHTML = `חלון ${hms(b.elapsed)} · חיוב ${hms(b.charge)} · ` +
+      `${b.workN} הודעות עבודה מתוך ${b.items.length} · ${b.projs.join(', ')}`;
+    $('msglist').innerHTML = b.items.map(msgRow).join('');
+  }
+  $('detail').style.display = 'block';
+  $('detail').scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+function showDay(d){
+  const lab = dayLabel(d);
+  const DAY_MS = 86400000, S = DAY_START;
+  const from = d * DAY_MS + S, to = from + DAY_MS;
+  const list = D.events.filter(e => e[0] >= from && e[0] < to).sort((a,b)=>a[0]-b[0]);
+  const work = list.filter(e => e[2] === 1).length;
+  $('detailTitle').textContent = `${lab.date} ${lab.wd} · יומן מלא (04:00–04:00)`;
+  $('detailHint').innerHTML = `${list.length} הודעות אדם · ${work} עבודה · ` +
+    `${list.length - work} אישי/אחר. הטקסט המלא כולל נושאים שאינם מחויבים.`;
+  $('msglist').innerHTML = list.map(msgRow).join('') || '<div class="dhint">אין הודעות אדם ביום זה.</div>';
+  $('detail').style.display = 'block';
+  $('detail').scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+document.addEventListener('click', ev => {
+  const blk = ev.target.closest && ev.target.closest('.blk');
+  if (blk){
+    document.querySelectorAll('.blk.sel').forEach(x=>x.classList.remove('sel'));
+    blk.classList.add('sel');
+    const [d,i] = blk.dataset.k.split(':').map(Number);
+    showBlock(window.__blocks.get(d)[i]); return;
+  }
+  const dh = ev.target.closest && ev.target.closest('.colhead .d');
+  if (dh){ showDay(+dh.dataset.day); }
+});
+
+// הסבר על בלוק בריחוף
+const tip = $('tip');
+document.addEventListener('mousemove', ev => {
+  const el = ev.target.closest && ev.target.closest('.blk');
+  if (!el){ tip.style.display = 'none'; return; }
+  const [d, i] = el.dataset.k.split(':').map(Number);
+  const b = window.__blocks.get(d)[i];
+  const lab = dayLabel(b.day);
+  tip.innerHTML = `<b>${lab.date} ${lab.wd}</b><br>` +
+    `${clockS(b.start)} – ${clockS(b.end)}<br>` +
+    `חלון: <b>${hms(b.elapsed)}</b> · חיוב: <b>${hms(b.charge)}</b><br>` +
+    (b.fixed ? b.note : `${b.workN} הודעות עבודה מתוך ${b.n}<br>` +
+      `${b.projs.join(', ')}<br>${b.machines.join(', ')} · ${b.clis.join(', ')}`);
+  tip.style.display = 'block';
+  const r = tip.getBoundingClientRect();
+  tip.style.left = Math.min(ev.clientX + 14, innerWidth - r.width - 10) + 'px';
+  tip.style.top = Math.min(ev.clientY + 14, innerHeight - r.height - 10) + 'px';
+});
+
+for (const id of ['gap','min','pad','zoom','from','to','useFixed','showOther'])
+  $(id).addEventListener('input', render);
+for (const r of document.querySelectorAll('input[name=mode]'))
+  r.addEventListener('change', render);
+$('tbl').addEventListener('toggle', () => render());
+$('presetSep').onclick = e => { e.preventDefault(); $('from').value = '2026-09-10';
+  $('to').value = '2026-09-30'; render(); };
+$('presetAll').onclick = e => { e.preventDefault(); $('from').value = '2026-09-10';
+  $('to').value = '2026-10-05'; render(); };
+
+$('meta').textContent = 'נוצר ' + D.generated.slice(0, 16).replace('T', ' ') +
+  ' · ' + D.events.length.toLocaleString('he-IL') + ' הודעות אדם · ' +
+  'תעריף ₪' + D.rate + ' לשעה · טיוטה לבדיקה, לא נכתב לגיליון ולא נשלח מייל';
+render();
+</script>
+</body>
+</html>

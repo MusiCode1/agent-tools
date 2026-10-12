@@ -85,6 +85,32 @@ if (!existsSync(DB_PATH)) { console.error(`✗ DB לא נמצא: ${DB_PATH}`); p
 const html = readFileSync(tpl, "utf8");
 const db = new Database(DB_PATH, { readonly: true });
 
+/**
+ * 🛑 הודעות בלי `ts` **אינן נראות בתצוגה** — הסינון הוא
+ *    `WHERE m.ts BETWEEN …`, ו-NULL נופל ממנו בשקט.
+ *
+ * נמדד 12/10/2026: **כל** 116,281 הודעות ה-`cursor-acp` נושאות NULL,
+ * ובהן 19,126 מ-14 הימים האחרונים. ⇒ עמודת-יום שבה עבדתי ב-Cursor
+ * נראית **ריקה**, ולא "חסרת-נתון".
+ *
+ * ולמה: בבלובי ה-JSON של Cursor אין חותמת-זמן ברמת-הודעה כלל — נמדד על
+ * מאגר אמיתי, 114 בלובי JSON, אפס מפתחות דמויי-זמן. יש `createdAt`
+ * ברמת-הסשן בלבד. ⚠️ ‏244 הבלובים הנותרים הם protobuf, ושם חילוץ
+ * המחרוזות לא היה חושף שדה מספרי — כלומר **לא נשלל** שיש שם חותמת.
+ *
+ * לכן המספר מופיע בבאנר ולא מוסתר: תצוגה שמדלגת בשקט גרועה מתצוגה
+ * שאומרת על מה היא מדלגת.
+ */
+const noTs = db.query(
+  `SELECT s.cli, count(*) n FROM messages m JOIN sessions s ON s.session_id = m.session_id
+    WHERE m.ts IS NULL GROUP BY s.cli ORDER BY n DESC`,
+).all() as { cli: string; n: number }[];
+const noTsTotal = noTs.reduce((a, r) => a + r.n, 0);
+if (noTsTotal) {
+  console.log(`⚠️  ${noTsTotal.toLocaleString("he-IL")} הודעות בלי ts — אינן בתצוגה: ` +
+    noTs.map((r) => `${r.cli}=${r.n}`).join(" · "));
+}
+
 Bun.serve({
   port: PORT,
   hostname: "127.0.0.1",
@@ -111,7 +137,10 @@ Bun.serve({
       padding:8px 12px;margin:12px 18px;font-size:12.5px">
       תצוגת <b>פעילות</b> מתוך <code>sessions.db</code> — ${payload.events.length.toLocaleString("he-IL")}
       הודעות (user+assistant) ב-${days} הימים האחרונים · נבנה ב-${ms}ms.
-      🛑 <b>אלה אינם מספרי-חיוב</b>: קורפוס-השעות עבר סינון-אוטומציה והפרדת-מפעיל, וה-DB לא.
+      🛑 <b>אלה אינם מספרי-חיוב</b>: קורפוס-השעות עבר סינון-אוטומציה והפרדת-מפעיל, וה-DB לא.${
+      noTsTotal ? `<br>🛑 <b>${noTsTotal.toLocaleString("he-IL")} הודעות אינן כאן כלל</b> — אין להן חותמת-זמן
+      (${noTs.map((r) => `${r.cli} ${r.n.toLocaleString("he-IL")}`).join(" · ")}).
+      ‏Cursor אינו שומר חותמת ברמת-הודעה. <b>יום שעבדת בו ב-Cursor ייראה ריק, לא חסר.</b>` : ""}
       </div>`;
 
     // 🛑 טקסט-הודעה שמכיל "</script>" סוגר את בלוק הסקריפט מוקדם ושובר
