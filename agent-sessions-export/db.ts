@@ -156,13 +156,22 @@ export class SessionsDb {
     //    מסונתז) נדחית בשקט, והשדות החדשים לעולם לא מגיעים אליה. לכן
     //    בודקים קיום, ומעשירים שורה קיימת ב-UPDATE נפרד.
     this.selId = this.db.query(`SELECT rowid FROM messages WHERE id = $id`);
+    // 🛑 ה-WHERE אינו קישוט: בלעדיו ה-UPDATE רץ גם על שורות שכבר
+    //    מועשרות. נמדד ב-mission13 — סשן פעיל אחד (32MB) נקרא מחדש כל
+    //    20 דקות כי חתימתו גדלה, וכל ~11,800 הודעותיו נכתבו שוב לחינם.
+    //    COALESCE ממילא רק *ממלא*, ולכן צמצום לשורות שיש בהן NULL
+    //    שקול בתוצאה ומבטל את הכתיבה המיותרת.
     this.updMsg = this.db.query(
       `UPDATE messages SET
          model     = COALESCE($model, model),
          parent_id = COALESCE($parent, parent_id),
          extra     = COALESCE($extra, extra),
          heavy     = COALESCE($heavy, heavy)
-       WHERE id = $id`,
+       WHERE id = $id AND (
+            (model     IS NULL AND $model  IS NOT NULL)
+         OR (parent_id IS NULL AND $parent IS NOT NULL)
+         OR (extra     IS NULL AND $extra  IS NOT NULL)
+         OR (heavy     IS NULL AND $heavy  IS NOT NULL))`,
     );
     // external-content FTS מאוכלס לפי rowid של השורה שזה-עתה נכתבה
     this.insFts = this.db.query(
@@ -222,9 +231,9 @@ export class SessionsDb {
           : null;
         if (this.selId.get({ $id: id })) {
           // קיימת — רק מעשירים. הטקסט זהה (אותו content_hash) ⇒ FTS לא נוגע.
-          this.updMsg.run({ $id: id, $model: m.model ?? null, $parent: parent,
-            $extra: extraJson, $heavy: heavyBlob });
-          enriched++;
+          const up = this.updMsg.run({ $id: id, $model: m.model ?? null,
+            $parent: parent, $extra: extraJson, $heavy: heavyBlob });
+          if (up.changes > 0) enriched++;   // רק העשרה אמיתית נספרת
           return;
         }
         const res = this.insMsg.run({
