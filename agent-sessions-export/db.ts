@@ -52,6 +52,7 @@ export type DbSession = {
 const INDEXED_ROLES = new Set(["user", "assistant"]);
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS export_state (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS sessions (
   session_id  TEXT PRIMARY KEY,
   machine     TEXT,
@@ -81,7 +82,8 @@ CREATE TABLE IF NOT EXISTS messages (
   parent_id    TEXT,      -- עץ-השיחה: parentUuid (Claude) / thread-parent (codex)
   text         TEXT NOT NULL,   -- חילוץ לחיפוש (פלט-כלי מקוצר)
   extra        TEXT,      -- JSON גלוי — כל המטא, ניתן ל-json_extract
-  heavy        BLOB       -- JSON דחוס (zlib) — I/O מלא של כלים + thinking
+  heavy        BLOB,      -- JSON דחוס (zlib) — I/O מלא של כלים + thinking
+  updated_at   INTEGER    -- חותמת-שינוי לדלתא: נקבעת גם בהוספה וגם בהעשרה
 );
 -- external-content FTS: לא משכפל טקסט; מאוכלס ידנית רק ל-user+assistant.
 -- ⚠️ count(*) וסריקת rowid משקפים את טבלת-התוכן, אבל MATCH מוצא רק שורות
@@ -97,12 +99,14 @@ CREATE INDEX IF NOT EXISTS idx_msg_session ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_msg_ts      ON messages(ts);
 CREATE INDEX IF NOT EXISTS idx_msg_chash   ON messages(content_hash);
 CREATE INDEX IF NOT EXISTS idx_msg_parent  ON messages(parent_id);
+CREATE INDEX IF NOT EXISTS idx_msg_upd     ON messages(updated_at);
 `;
 
 /** עמודות שנוספו אחרי שה-DB כבר נוצר. ‏CREATE TABLE IF NOT EXISTS
  *  אינו מוסיף אותן לטבלה קיימת — צריך ALTER מפורש. */
 const MIGRATIONS: Record<string, [string, string][]> = {
-  messages: [["model", "TEXT"], ["parent_id", "TEXT"], ["heavy", "BLOB"]],
+  messages: [["model", "TEXT"], ["parent_id", "TEXT"], ["heavy", "BLOB"],
+             ["updated_at", "INTEGER"]],
   sessions: [["model", "TEXT"], ["model_provider", "TEXT"],
              ["parent_session_id", "TEXT"], ["usage", "TEXT"]],
 };
@@ -149,8 +153,8 @@ export class SessionsDb {
     this.db.exec(INDEXES);
     this.insMsg = this.db.query(
       `INSERT OR IGNORE INTO messages
-       (id, content_hash, session_id, seq, role, model, ts, parent_id, text, extra, heavy)
-       VALUES ($id,$ch,$session,$seq,$role,$model,$ts,$parent,$text,$extra,$heavy)`,
+       (id, content_hash, session_id, seq, role, model, ts, parent_id, text, extra, heavy, updated_at)
+       VALUES ($id,$ch,$session,$seq,$role,$model,$ts,$parent,$text,$extra,$heavy,$now)`,
     );
     // 🛑 INSERT OR IGNORE לבדו הופך backfill ל-no-op: שורה קיימת (אותו id
     //    מסונתז) נדחית בשקט, והשדות החדשים לעולם לא מגיעים אליה. לכן
@@ -166,7 +170,8 @@ export class SessionsDb {
          model     = COALESCE($model, model),
          parent_id = COALESCE($parent, parent_id),
          extra     = COALESCE($extra, extra),
-         heavy     = COALESCE($heavy, heavy)
+         heavy     = COALESCE($heavy, heavy),
+         updated_at = $now
        WHERE id = $id AND (
             (model     IS NULL AND $model  IS NOT NULL)
          OR (parent_id IS NULL AND $parent IS NOT NULL)
@@ -232,14 +237,14 @@ export class SessionsDb {
         if (this.selId.get({ $id: id })) {
           // קיימת — רק מעשירים. הטקסט זהה (אותו content_hash) ⇒ FTS לא נוגע.
           const up = this.updMsg.run({ $id: id, $model: m.model ?? null,
-            $parent: parent, $extra: extraJson, $heavy: heavyBlob });
+            $parent: parent, $extra: extraJson, $heavy: heavyBlob, $now: Date.now() });
           if (up.changes > 0) enriched++;   // רק העשרה אמיתית נספרת
           return;
         }
         const res = this.insMsg.run({
           $id: id, $ch: ch, $session: sid, $seq: seq, $role: m.role,
           $model: m.model ?? null, $ts: tsMs(m.created_at), $parent: parent, $text: text,
-          $extra: extraJson, $heavy: heavyBlob,
+          $extra: extraJson, $heavy: heavyBlob, $now: Date.now(),
         });
         if (res.changes > 0) {
           added++;
