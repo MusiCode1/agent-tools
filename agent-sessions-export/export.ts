@@ -83,6 +83,7 @@ const MACHINE = process.argv.find((a) => a.startsWith("--machine="))?.split("=")
 // ---------- rebuild-db: בונה את ה-DB מהארכיון הקיים (meta/*.json), בלי cass ----------
 if (REBUILD_DB) {
   const sdb = new SessionsDb(SESSIONS_DB_PATH);
+  sdb.fillOnly = true;   // הארכיון ממלא פערים ואינו מצהיר מחדש ערך ישן
   let files = 0, added = 0, bad = 0;
   for (const root of Object.values(cfg.repos)) {
     if (!root) continue;

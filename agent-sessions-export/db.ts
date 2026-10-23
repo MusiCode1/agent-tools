@@ -187,10 +187,13 @@ export class SessionsDb {
   private insMsg;
   private insFts;
   private insSess;
+  private fillSess;
   private selId;
   private updMsg;
   /** כמה שורות קיימות הועשרו (backfill) — לדיווח. */
   enrichedTotal = 0;
+  /** `--rebuild-db`: שורת-הסשן ממולאת-בפערים בלבד. ראו ליד `fillSess`. */
+  fillOnly = false;
 
   constructor(path: string) {
     mkdirSync(dirname(path), { recursive: true });
@@ -232,11 +235,59 @@ export class SessionsDb {
       `INSERT INTO messages_fts(rowid, text) VALUES ($rowid, $text)`,
     );
     this.insSess = this.db.query(
-      `INSERT OR REPLACE INTO sessions
+      // 🛑 היה `INSERT OR REPLACE`, ו-REPLACE מוחק את השורה הקיימת לפני
+      //    הכתיבה ⇒ כל שדה שהמקור הנוכחי אינו מספק **נמחק**. זה לא הפריע
+      //    כל עוד המקור היחיד היה ה-JSONL החי, אבל `--rebuild-db` קורא
+      //    מהארכיון — ושם אין את כל השדות ⇒ הרצה אחת הייתה מרוקנת שדות
+      //    ב-3,429 סשנים תקינים (נמדד 23/10/2026).
+      //
+      // 🔑 והסמנטיקה כאן אינה זו של `messages`: שם יש `WHERE … IS NULL`,
+      //    כי תוכן הודעה אינו משתנה. **סשן כן גדל**, ולכן ended_at/title/
+      //    usage חייבים להתעדכן בכל ריצה. ⇒ COALESCE בלי WHERE:
+      //    ערך חדש גובר, ו-NULL חדש **אינו** מוחק ערך קיים.
+      `INSERT INTO sessions
        (session_id, machine, cli, project, cwd, title, started_at, ended_at,
         model, model_provider, parent_session_id, usage, meta)
        VALUES ($session,$machine,$cli,$project,$cwd,$title,$started,$ended,
-               $model,$provider,$parent,$usage,$meta)`,
+               $model,$provider,$parent,$usage,$meta)
+       ON CONFLICT(session_id) DO UPDATE SET
+         machine           = COALESCE(excluded.machine,           machine),
+         cli               = COALESCE(excluded.cli,               cli),
+         project           = COALESCE(excluded.project,           project),
+         cwd               = COALESCE(excluded.cwd,               cwd),
+         title             = COALESCE(excluded.title,             title),
+         started_at        = COALESCE(excluded.started_at,        started_at),
+         ended_at          = COALESCE(excluded.ended_at,          ended_at),
+         model             = COALESCE(excluded.model,             model),
+         model_provider    = COALESCE(excluded.model_provider,    model_provider),
+         parent_session_id = COALESCE(excluded.parent_session_id, parent_session_id),
+         usage             = COALESCE(excluded.usage,             usage),
+         meta              = COALESCE(excluded.meta,              meta)`,
+    );
+    // 🔑 נתיב ה-rebuild — **סמנטיקה הפוכה, ובכוונה.**
+    //    `--rebuild-db` קורא מהארכיון, שנכתב ע"י גרסות-ייצוא ישנות. נמדד
+    //    23/10/2026 שהרצה עם COALESCE-דורס החזירה 41 כותרות ל-
+    //    `<timestamp>Sunday, Aug 30…` ו-39 תיוגי-cli מ-`cursor-chats`
+    //    ל-`cursor`. ⇒ שחזור נועד **למלא פערים, לא להצהיר מחדש ערך ישן**.
+    this.fillSess = this.db.query(
+      `INSERT INTO sessions
+       (session_id, machine, cli, project, cwd, title, started_at, ended_at,
+        model, model_provider, parent_session_id, usage, meta)
+       VALUES ($session,$machine,$cli,$project,$cwd,$title,$started,$ended,
+               $model,$provider,$parent,$usage,$meta)
+       ON CONFLICT(session_id) DO UPDATE SET
+         machine           = CASE WHEN machine IS NULL THEN excluded.machine ELSE machine END,
+         cli               = CASE WHEN cli IS NULL THEN excluded.cli ELSE cli END,
+         project           = CASE WHEN project IS NULL THEN excluded.project ELSE project END,
+         cwd               = CASE WHEN cwd IS NULL THEN excluded.cwd ELSE cwd END,
+         title             = CASE WHEN title IS NULL THEN excluded.title ELSE title END,
+         started_at        = CASE WHEN started_at IS NULL THEN excluded.started_at ELSE started_at END,
+         ended_at          = CASE WHEN ended_at IS NULL THEN excluded.ended_at ELSE ended_at END,
+         model             = CASE WHEN model IS NULL THEN excluded.model ELSE model END,
+         model_provider    = CASE WHEN model_provider IS NULL THEN excluded.model_provider ELSE model_provider END,
+         parent_session_id = CASE WHEN parent_session_id IS NULL THEN excluded.parent_session_id ELSE parent_session_id END,
+         usage             = CASE WHEN usage IS NULL THEN excluded.usage ELSE usage END,
+         meta              = CASE WHEN meta IS NULL THEN excluded.meta ELSE meta END`,
     );
   }
 
@@ -261,7 +312,7 @@ export class SessionsDb {
       try { probe.schemaProbe(s, msgs, probeStats); } catch { /* גילוי בלבד */ }
     }
     const sid = String(s.external_id ?? `${s.machine}:${s.agent}:${s.title ?? ""}`);
-    this.insSess.run({
+    (this.fillOnly ? this.fillSess : this.insSess).run({
       $session: sid, $machine: s.machine, $cli: s.agent, $project: s.project,
       $cwd: s.workspace ?? null, $title: s.title ?? null,
       $started: tsMs(s.started_at), $ended: tsMs(s.ended_at),
