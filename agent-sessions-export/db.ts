@@ -22,6 +22,26 @@ import { deflateSync } from "node:zlib";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
+/** ─── בדיקת-סכמה: גילוי בלבד, ולכן **אופציונלית לחלוטין**. ───
+ *  🛑 הייצוא הוא גם הגיבוי. אם `arktype` חסר, פגום, או שה-probe זורק —
+ *     הכתיבה ל-DB חייבת להימשך כרגיל. לכן ייבוא דינמי בתוך try, ו-
+ *     `probe = null` כברירת-מחדל. `--no-probe` מכבה גם כשהוא כן זמין.
+ */
+type ProbeFns = typeof import("./db-schemas.ts");
+let probe: ProbeFns | null = null;
+export let probeStats: ReturnType<ProbeFns["newProbeStats"]> | null = null;
+const PROBE_OFF = process.argv.includes("--no-probe");
+if (!PROBE_OFF) {
+  try {
+    probe = require("./db-schemas.ts") as ProbeFns;
+    probeStats = probe.newProbeStats();
+  } catch { probe = null; probeStats = null; }
+}
+/** דוח הגילוי, או null כשה-probe לא רץ. נקרא מ-export.ts. */
+export function schemaProbeReport(): string | null {
+  return probe && probeStats ? probe.probeReport(probeStats) : null;
+}
+
 export type DbMsg = {
   role: string;
   author?: string | null;
@@ -111,6 +131,21 @@ const MIGRATIONS: Record<string, [string, string][]> = {
              ["parent_session_id", "TEXT"], ["usage", "TEXT"]],
 };
 
+/** שדות שכבר נקראו לעמודות משלהם. ‏`meta` אוסף את **כל** השאר.
+ *  🔑 נמדד 23/10/2026: הכתיבה הייתה `s.meta ? … : null`, ואין יצרן שמגדיר
+ *  `meta` — כולם מספקים שמות ייחודיים (`jsonl_meta`, `estimated_cost_usd`,
+ *  `cursor_mode`, `opencode_agent`…). ⇒ העמודה נכתבה null ב-4,460 מתוך
+ *  4,460, ו-15 שדות נזרקו. `[k: string]: unknown` ב-DbSession מכשיר כל שם,
+ *  ולכן המהדר לא יכול לתפוס אי-התאמה כזו. רשימה לבנה הייתה חוזרת על
+ *  הבאג בכל שדה חדש; דלי הוא מה שסוגר את המחלקה.
+ *  הכוונה המקורית (e684386, "שום מטא לא נזרק") הייתה סימטרית ל-`extra`
+ *  ברמת-ההודעה — ושם היא כן יושמה. */
+const SESSION_CONSUMED = new Set([
+  "external_id", "machine", "agent", "project", "workspace", "title",
+  "started_at", "ended_at", "primary_model", "model", "model_provider",
+  "parent_session_id", "parent_id", "meta",
+]);
+
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const tsMs = (iso?: string | null): number | null => {
   if (!iso) return null;
@@ -120,6 +155,20 @@ const tsMs = (iso?: string | null): number | null => {
 
 /** usage כ-JSON מכמה מקורות: Claude מצבר ב-jsonl_meta.usage; cass/opencode
  *  נותנים שדות-טוקנים top-level. מחזיר null אם אין נתוני-usage. */
+/** כל שדה שאינו נצרך לעמודה → JSON גלוי ב-`sessions.meta`.
+ *  🛑 גלוי ולא דחוס, בכוונה: `extra`/`meta` נועדו ל-`json_extract`, ודחוס
+ *  הוא אטום. דחיסה חיה ב-`heavy` בלבד (e684386). */
+function sessionMeta(s: DbSession): string | null {
+  const rest: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(s)) {
+    if (SESSION_CONSUMED.has(k)) continue;
+    if (v === undefined) continue;
+    rest[k] = v;
+  }
+  if (s.meta && typeof s.meta === "object") Object.assign(rest, s.meta);
+  return Object.keys(rest).length ? JSON.stringify(rest) : null;
+}
+
 function extractUsage(s: DbSession): string | null {
   const jm = s.jsonl_meta as { usage?: unknown } | undefined;
   if (jm?.usage) return JSON.stringify(jm.usage);
@@ -207,6 +256,10 @@ export class SessionsDb {
   /** כותב סשן אחד (שורת sessions + שורות messages). אידמפוטנטי: הרצה חוזרת
    *  לא כותבת שוב (INSERT OR IGNORE לפי id מסונתז). מחזיר כמה הודעות חדשות. */
   upsertSession(s: DbSession, msgs: DbMsg[]): number {
+    // גילוי לפני כתיבה — ולא שער לפניה. נכשל בשקט ואינו משנה דבר.
+    if (probe && probeStats) {
+      try { probe.schemaProbe(s, msgs, probeStats); } catch { /* גילוי בלבד */ }
+    }
     const sid = String(s.external_id ?? `${s.machine}:${s.agent}:${s.title ?? ""}`);
     this.insSess.run({
       $session: sid, $machine: s.machine, $cli: s.agent, $project: s.project,
@@ -215,7 +268,7 @@ export class SessionsDb {
       $model: (s.primary_model ?? s.model ?? null) as string | null,
       $provider: (s.model_provider ?? null) as string | null,
       $parent: (s.parent_session_id ?? s.parent_id ?? null) as string | null,
-      $usage: extractUsage(s), $meta: s.meta ? JSON.stringify(s.meta) : null,
+      $usage: extractUsage(s), $meta: sessionMeta(s),
     });
     let added = 0;
     let enriched = 0;

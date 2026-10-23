@@ -15,7 +15,7 @@ import { findStores, readStore, storeSignature } from "./cursor-store";
 import { redact, type RedactStats } from "./redact";
 import { readOpencode, opencodeDbPath, opencodeSignature } from "./opencode-store";
 import { indexClaudeJsonl, readJsonlMeta, readJsonlSession } from "./jsonl-meta";
-import { SessionsDb } from "./db";
+import { SessionsDb, schemaProbeReport } from "./db";
 
 type Route = { match?: string; match_source?: string; repo: string | null; label?: string };
 type Config = {
@@ -565,4 +565,6 @@ console.log(`opencode.db: ${ocRead} סשנים${ocUnchanged ? " · ללא שינ
 console.log(`מאגרי Cursor store.db: ${cursorRead} נקראו · ${cursorUnchanged} ללא שינוי · ${cursorSkipped} ריקים/כשלו`);
 const rTot = Object.values(redactStats).reduce((a, b) => a + b, 0);
 if (rTot) console.log(`\n🔒 סודות שהוסתרו: ${rTot} — ${JSON.stringify(redactStats)}`);
+const probeOut = schemaProbeReport();
+if (probeOut) console.log("\n" + probeOut);
 if (!APPLY) console.log(`\nלא נכתב כלום. להרצה אמיתית: bun export.ts --apply`);

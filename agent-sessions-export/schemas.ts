@@ -58,7 +58,11 @@ const CLAUDE: CliSchema = {
         isCompactSummary: "boolean", isApiErrorMessage: "boolean",
         error: ["string", "object"], isAbortedMidStream: "boolean",
         supersedesUuids: "array",
-        // נמדדו בגרסה/כותב אחר: session_id ב-snake_case לצד sessionId
+        // נמדדו 23/10/2026 על כל הקורפוס:
+        permissionDecision: "object",        // ×16  {decision,source,reasonType}
+        imagePasteIds: "array",              // ×6   [1]
+        // נמדד: session_id זהה לחלוטין ל-sessionId באותה רשומה — שדה כפול
+        // באותה גרסה (2.1.285), ולא כותב אחר. ההשערה הראשונה הייתה שגויה.
         session_id: "string", serverClassifierRequest: ["object", "string"],
         serverClassifierContext: ["object", "string"], turnPosition: ["number", "string", "object"],
       },
@@ -82,10 +86,35 @@ const CLAUDE: CliSchema = {
         error: ["string", "object"], isAbortedMidStream: "boolean",
         supersedesUuids: "array", apiErrorStatus: ["string", "number", "object"],
         quotaLimits: "object",
-        // נמדדו בגרסה/כותב אחר: session_id ב-snake_case לצד sessionId
+        // נמדדו 23/10/2026 על כל הקורפוס — טיפוס יחיד לכל אחד:
+        requestedModel: "string",            // ×89  claude-opus-5-5 · claude-haiku-4-5
+        thinkingDurationMs: "number",        // ×41  7278
+        thinkingDisplay: "string",           // ×41  summarized
+        requestRef: "string",                // ×1   uuid
+        // נמדד: session_id זהה לחלוטין ל-sessionId באותה רשומה — שדה כפול
+        // באותה גרסה (2.1.285), ולא כותב אחר. ההשערה הראשונה הייתה שגויה.
         session_id: "string", serverClassifierRequest: ["object", "string"],
         serverClassifierContext: ["object", "string"], turnPosition: ["number", "string", "object"],
       },
+    },
+    // ─── רשומות תשתית-API. נמדדו 23/10/2026; איננו מחלצים מהן תוכן,
+    //     אך הן ממודלות כדי שסטייה עתידית בהן תדווח ולא תיבלע.
+    {
+      name: "api-request",
+      required: { type: "string", sessionId: "string", id: "string", timestamp: "string" },
+      optional: { version: "string", querySource: "string", shapeHash: "string",
+        params: "object", keep: "number", tail: "array", cacheControl: "array",
+        requestDigest: "string" },
+    },
+    {
+      name: "api-request-shape",
+      required: { type: "string", sessionId: "string", shapeHash: "string" },
+      optional: { timestamp: "string", version: "string", shape: "object" },
+    },
+    {
+      name: "api-request-blob",
+      required: { type: "string", sessionId: "string", hash: "string" },
+      optional: { message: "object" },
     },
   ],
   // נמדדו בקורפוס — קיימים ואיננו מחלצים מהם, אך אינם חריגה
@@ -114,6 +143,8 @@ export const CLAUDE_BLOCKS: CliSchema = {
     { name: "thinking", required: { type: "string" }, optional: { thinking: "string", signature: "string" } },
     { name: "redacted_thinking", required: { type: "string" }, optional: { data: "string" } },
     { name: "image", required: { type: "string" }, optional: { source: "object" } },
+    // ×3, נמדד 23/10/2026
+    { name: "tool_addition", required: { type: "string", tool: "object" }, optional: {} },
   ],
   knownUnmodeled: ["document", "server_tool_use", "web_search_tool_result"],
 };

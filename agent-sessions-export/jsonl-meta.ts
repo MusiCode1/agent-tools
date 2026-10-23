@@ -44,6 +44,13 @@ export type JsonlMeta = {
 
 /** שדות ברמת-הרשומה שנשמרים ב-extra. ‏uuid/parentUuid הם עץ-השיחה;
  *  sourceTool* מקשרים סשן תת-סוכן לקריאת-הכלי של ההורה. */
+/** שדות שכבר נקראו לעמודה או לגוף-ההודעה — לא משכפלים ל-`extra`.
+ *  🛑 כל השאר נלקח. `version` (גרסת ה-CLI) **כן** נכנס: היום הוא נקרא
+ *  ל-`cli_version` ברמת-הסשן בלבד, ובלעדיו אי-אפשר לשאול מאיזו גרסה
+ *  הופיע שדה חדש. */
+const RECORD_HANDLED = new Set<string>(["type", "message", "timestamp", "toolUseResult"]);
+const MESSAGE_HANDLED = new Set<string>(["role", "content", "model"]);
+
 const RECORD_META = [
   "uuid", "parentUuid", "isSidechain", "userType", "entrypoint", "requestId",
   "effort", "perTurnEffort", "promptId", "attributionSkill", "attributionMcpServer",
@@ -87,7 +94,26 @@ function partsText(c: unknown, tur?: unknown): { text: string; lean: string; hea
       lean.push(`[tool_result: ${c2.length}]`);
       heavy.push({ kind: "tool_result", id: o.tool_use_id ?? null, content: o.content });
     } else if (o.type === "thinking" || o.type === "redacted_thinking") {
+      // 🔑 נמדד 23/10/2026: Claude Code כותב **שורה נפרדת לכל בלוק-תוכן**
+      //    (820 requestId → 1,784 רשומות assistant; apiBlockIndex 0/1/2).
+      //    ⇒ בלוק-thinking הוא רשומה שלמה שבה אין טקסט, ובלי סמן כאן
+      //    `text` יוצא ריק והרשומה נזרקת ב-`if (!content)` למטה —
+      //    26,777 בלוקים, ואיתם thinkingDurationMs/thinkingDisplay.
+      const th = typeof o.thinking === "string" ? o.thinking
+               : typeof o.data === "string" ? o.data : "";
+      out.push(`[${String(o.type)}: ${th.length}]`);
+      lean.push(`[${String(o.type)}: ${th.length}]`);
       heavy.push({ kind: String(o.type), thinking: o.thinking ?? o.data ?? null });
+    } else if (o.type === "image") {
+      const src = (o.source ?? {}) as Record<string, unknown>;
+      out.push(`[image: ${String(src.media_type ?? "?")}]`);
+      lean.push("[image]");
+      heavy.push({ kind: "image", source: o.source ?? null });
+    } else if (typeof o.type === "string") {
+      // סוג-בלוק שטרם ראינו — סמן + שמירה מלאה, במקום השמטה שקטה.
+      out.push(`[${o.type}]`);
+      lean.push(`[${o.type}]`);
+      heavy.push({ kind: String(o.type), raw: o });
     }
   }
   // toolUseResult (ברמה העליונה) הוא התוצאה המובנית של מריץ-הכלי.
@@ -137,15 +163,28 @@ export function readJsonlSession(path: string): { meta: JsonlMeta; messages: Jso
       u.assistant_turns++;
     }
     const { text: content, lean, heavy } = partsText(m.content, o.toolUseResult);
-    if (!content) continue;
+    // גם כשאין טקסט — רשומה עם heavy היא רשומה אמיתית ונשמרת.
+    if (!content && !heavy.length) continue;
     const ts = typeof o.timestamp === "string" ? o.timestamp : undefined;
     const model = typeof m.model === "string" ? m.model : undefined;
     if (model && !meta.primary_model) meta.primary_model = model;
     if (ts) { if (!meta.started_at) meta.started_at = ts; meta.ended_at = ts; }
     // כל מטא שאינו עמודה — נשמר שלם. אין רשימת-היתר צרה: מה שקיים, נלקח.
     const extra: Record<string, unknown> = {};
-    for (const k of RECORD_META) if (o[k] !== undefined) extra[k] = o[k];
-    for (const k of MESSAGE_META) if (m[k] !== undefined) extra["message_" + k] = m[k];
+      // 🔑 נמדד 23/10/2026: עד כה זו **כן** הייתה רשימה לבנה (RECORD_META +
+      // MESSAGE_META, 31 שדות), בניגוד להערה שמעל. ⇒ כל שדה ש-Claude הוסיף
+      // נזרק בשקט: requestedModel ×89 · thinkingDurationMs ×41 ·
+      // thinkingDisplay ×41 · permissionDecision ×16 · imagePasteIds ×6,
+      // ואימות ב-DB החזיר 0 לכל אחד. דלי סוגר את המחלקה; רשימה מורחבת
+      // הייתה חוזרת על הבאג בשדה הבא.
+      for (const [k, v] of Object.entries(o)) {
+        if (RECORD_HANDLED.has(k) || v === undefined) continue;
+        extra[k] = v;
+      }
+      for (const [k, v] of Object.entries(m)) {
+        if (MESSAGE_HANDLED.has(k) || v === undefined) continue;
+        extra["message_" + k] = v;
+      }
     messages.push({ role: String(t), content, lean, created_at: ts, model,
       extra: Object.keys(extra).length ? extra : undefined,
       heavy: heavy.length ? heavy : undefined });
