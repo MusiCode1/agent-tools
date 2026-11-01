@@ -15,6 +15,7 @@ import { findStores, readStore, storeSignature } from "./cursor-store";
 import { redact, type RedactStats } from "./redact";
 import { readOpencode, opencodeDbPath, opencodeSignature } from "./opencode-store";
 import { indexClaudeJsonl, readJsonlMeta, readJsonlSession } from "./jsonl-meta";
+import { indexCodexSessions, readCodexSession, codexTitles } from "./codex-store";
 import { SessionsDb, schemaProbeReport } from "./db";
 
 type Route = { match?: string; match_source?: string; repo: string | null; label?: string };
@@ -213,6 +214,8 @@ const msgStmt = db.query(`SELECT role, author, created_at, content FROM messages
 // (agent_setting, git_branch, is_sidechain, cli_version, ספירת attachments).
 // נמדד: cass מחזיקה extra_json ל-2.6% מההודעות בלבד. העלות: 3.5s ל-536 קבצים.
 const jsonlIdx = indexClaudeJsonl(HOME);
+const codexIdx = indexCodexSessions(HOME);
+const codexTitleMap = codexTitles(HOME);
 
 // ---------- plan ----------
 type Stat = { convs: number; bytes: number };
@@ -497,6 +500,82 @@ for (const [sid, jsonlPath] of jsonlIdx) {
   if (sdb) dbAdded += sdb.upsertSession(session, safe);
   // heavy נשמר דחוס ב-DB בלבד. ב-JSON של הארכיון הוא לא-דחוס ⇒ היה מנפח את
   // ריפו-הדאטה בגיט. extra (המטא) כן נכנס — הוא קטן ובעל-ערך.
+  const jsonBody = JSON.stringify(
+    { session, messages: safe.map(({ heavy, ...rest }) => rest) }, null, 2);
+  const md = [
+    `# ${session.title ?? "(ללא כותרת)"}`, "",
+    `*${agent} · ${project} · ${r.meta.started_at?.slice(0, 19) ?? "?"}*`, "",
+    wsRaw ? `*${wsRaw}*` : "", "", "---", "",
+    ...safe.flatMap((m) => [`## ${m.role}`, "", m.content, "", "---", ""]),
+  ].join("\n");
+  const bytes = Buffer.byteLength(jsonBody) + Buffer.byteLength(md);
+  (stats[repoName] ??= {});
+  const stt = (stats[repoName][project] ??= { convs: 0, bytes: 0 });
+  stt.convs++; stt.bytes += bytes;
+  written++; totalBytes += bytes;
+  if (registerPath && !(registerPath in rs.paths)) { rs.paths[registerPath] = project; rs.dirty = true; }
+  rs.indexLines.push(JSON.stringify({
+    external_id: sid, agent, project, workspace: wsRaw, title: session.title,
+    started_at: r.meta.started_at, messages: r.messages.length,
+    md: `data/${cfg.machine}/sessions/${project}/${agent}/${base}.md`,
+    json: `data/${cfg.machine}/meta/${project}/${agent}/${base}.json`,
+  }));
+  if (APPLY && WANT_FILES) {
+    mkdirSync(mdDir, { recursive: true });
+    mkdirSync(jsonDir, { recursive: true });
+    writeFileSync(jsonPath, jsonBody);
+    writeFileSync(mdPath, md);
+  }
+}
+
+// ---------- מקור חמישי: Codex ישירות מה-rollouts ----------
+// עד 06/09/2026 codex נכנס רק דרך cass; כשהיא פרשה הקליטה מתה בשקט
+// (אפס סשני codex מאז 01/09 כאן, ואפס אי-פעם ב-mission13). הסכמה הייתה
+// כתובה ב-schemas.ts אבל קורא לא נכתב. המפתח הוא ה-session_id הילידי.
+let codexRead = 0;
+for (const [sid, rolloutPath] of codexIdx) {
+  const sigKey = `codex:${rolloutPath}`;
+  const sig = storeSignature(rolloutPath);
+  nextState[sigKey] = sig;
+  if (!DB_BACKFILL && state[sigKey] === sig) continue;
+  const r = readCodexSession(rolloutPath);
+  if (!r) continue;
+  const wsRaw = r.meta.cwd ?? null;
+  const ws = wsRaw ? resolvePath(wsRaw) : null;
+  const routed = routeOf(ws, rolloutPath);
+  const repoName = routed.repo;
+  if (repoName === null) { skippedRoute++; continue; }
+  const rs = repoState[repoName];
+  if (!rs) continue;
+  const derived = labelOf(ws, rs.paths);
+  const project = routed.label ?? derived.label;
+  const registerPath = routed.label ? null : derived.registerPath;
+  const agent = "codex";
+  const base = safeName(sid);
+  const mdDir = join(rs.root, "data", cfg.machine, "sessions", project, agent);
+  const jsonDir = join(rs.root, "data", cfg.machine, "meta", project, agent);
+  const jsonPath = join(jsonDir, base + ".json");
+  const mdPath = join(mdDir, base + ".md");
+  if (!DB_BACKFILL && existsSync(jsonPath) && isCurrent(jsonPath, r.messages.length)) { alreadyDone++; continue; }
+  codexRead++;
+  // כותרת: thread_name מ-session_index אם יש; אחרת ההודעה האמיתית הראשונה
+  // (ולא רשומת-בקרה, שהיא לרוב הראשונה בקובץ).
+  const firstReal = r.messages.find((m) => m.role !== "control" && !m.content.startsWith("["));
+  const session = {
+    export_version: EXPORT_VERSION,
+    external_id: sid, title: codexTitleMap.get(sid) ?? firstReal?.content.slice(0, 80), agent,
+    machine: cfg.machine, project, workspace: wsRaw, source_path: rolloutPath,
+    started_at: r.meta.started_at, ended_at: r.meta.ended_at,
+    primary_model: r.meta.primary_model, message_count: r.messages.length,
+    jsonl_meta: r.meta,
+  };
+  const safe = r.messages.map((m) => ({
+    ...m,
+    content: redact(m.content, redactStats),
+    extra: redactDeep(m.extra, redactStats),
+    heavy: redactDeep(m.heavy, redactStats),
+  }));
+  if (sdb) dbAdded += sdb.upsertSession(session, safe);
   const jsonBody = JSON.stringify(
     { session, messages: safe.map(({ heavy, ...rest }) => rest) }, null, 2);
   const md = [
