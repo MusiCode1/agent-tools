@@ -35,9 +35,33 @@ grok · Gemini/Antigravity · pi · omp · hermes · openclaw · cline.
 
 ## 🆕 ‏`sq` — חיפוש ב-DB, קריאת-כלי אחת במקום שלוש
 
-מאז 11/10/2026 יש גם **DB** (`~/.cache/agent-sessions/sessions.db`),
-שנבנה ע"י אותו `agent-sessions-export.timer` כל 20 דקות. הוא **אינו
-מחליף** את recoll — הוא מקצר את הדפוס.
+מאז 11/10/2026 יש גם **DB**, שנבנה ע"י `agent-sessions-export.timer`
+כל 20 דקות. הוא **אינו מחליף** את recoll — הוא מקצר את הדפוס.
+
+### 🔑 איך מוצאים את הכלי ואת המסד
+
+**הכלי: פשוט `sq`.** יש עטיפה ב-PATH (`~/.local/bin/sq` → סימלינק לתוך
+`agent-sessions-export`). אין צורך לדעת נתיבים — `sq --stats` עובד תמיד,
+וזו גם הדרך לוודא שהמסד חי.
+
+🛑 **אל תניח נתיב-מסד קבוע.** הוא נפתר בשרשרת, ו**ברירת-המחדל אינה מה
+שבשימוש ברוב המכונות**:
+
+```
+--db <path>  →  $AGENT_SESSIONS_DB  →  db_path ב-~/.config/agent-sessions/config.json
+             →  ברירת-מחדל: ~/.cache/agent-sessions/sessions.db
+```
+
+לראות את הנתיב בפועל: `grep db_path ~/.config/agent-sessions/config.json`.
+
+**על violate9 (נמדד 01/11/2026):** הקונפיג דורס לברירת-מחדל אחרת —
+`~/.local/state/agent-sessions/sessions.db` (2.9GB). התיקייה `~/.cache/agent-sessions/`
+**אינה קיימת** כאן; מי שיחפש אותה יסיק בטעות שאין מסד.
+
+⚠️ **ואל תתבלבל עם** `~/.local/share/coding-agent-search/agent_search.db` —
+זה המסד של **`cass`**, כלי אחר. תוכנו קפוא מ-06/09/2026, אבל `export.ts`
+פותח אותו readonly ו**מת בלעדיו** ⇒ **אין למחוק אותו**: זה יעצור את
+הסנכרון כל 20 דקות ואת הדחיפה לארכיון.
 
 **הדפוס הישן:** `recollq` → נתיב → פתיחת ה-`.md` → `grep` בתוכו.
 **עם `sq`:** תוצאה אחת כוללת כבר את הקטע המודגש **ואת הקשר-הסשן**
