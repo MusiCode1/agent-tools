@@ -1,4 +1,17 @@
 {
-  "liam-tablet": { "ssh": "liam-tablet", "via": "root", "bw_item": "liam-tablet" },
-  "myphone":     { "ssh": "myphone-wg",  "via": "rish", "bw_item": "myphone" }
+  "liam-tablet": {
+    "transport": "ssh",
+    "ssh": "liam-tablet",
+    "via": "root",
+    "bw_item": "liam-tablet",
+    "adb": {
+      "serial": "10.32.0.11:5555"
+    }
+  },
+  "myphone": {
+    "transport": "ssh",
+    "ssh": "myphone-wg",
+    "via": "rish",
+    "bw_item": "myphone"
+  }
 }

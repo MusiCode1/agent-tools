@@ -1,0 +1,8 @@
+{
+  "name": "android-unlock",
+  "private": true,
+  "type": "module",
+  "description": "הזנת תבנית/PIN/סיסמה למכשיר אנדרואיד מרוחק (SSH/ADB, קרדנציאל מביטוורדן)",
+  "bin": { "android-unlock": "./android-unlock.ts" },
+  "devDependencies": { "@types/bun": "latest" }
+}
