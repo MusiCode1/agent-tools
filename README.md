@@ -8,6 +8,7 @@
 | `agent-sessions-export/` | כלי שמירת/ייצוא סשני-סוכן (Cursor/opencode → Markdown+meta) |
 | `agents-kb-tools/` | כלי בסיס-הידע (`kb-build-agents`, `kb-wiki-index`, `kb-hygiene`…) |
 | `linux-gui/` | קונטיינר דפדפן (webtop+Chrome+playwright-cli) |
+| `android-unlock/` | הזנת תבנית/PIN/סיסמה למכשיר אנדרואיד מרוחק (קרדנציאל מביטוורדן, מסלול עץ-נגישות) |
 | `recoll/` | קונפיג recoll (‏`recoll.conf` + `fields`/`backends`/`mimemap` למופעים) — **לא** האינדקסים |
 
 ## איך הם מתחברים

@@ -1,0 +1,4 @@
+{
+  "liam-tablet": { "ssh": "liam-tablet", "via": "root", "bw_item": "liam-tablet" },
+  "myphone":     { "ssh": "myphone-wg",  "via": "rish", "bw_item": "myphone" }
+}
