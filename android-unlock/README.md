@@ -81,3 +81,7 @@ bun android-unlock.ts liam-tablet --remove-lock    # 🛑 הסרת נעילה (�
 - לא מזריק בשיחה פעילה (אלא `--force`).
 - מאמת הצלחה ב-`isKeyguardShowing=false`, לא בהנחה.
 - הקוד לא מודפס/נכתב, ו-`logcat` מנוקה אחרי כל שלב שהעמיד אותו בשורת-פקודה.
+
+## פרויקטים אחרים עם אותו רעיון
+
+מיפוי prior-art והערכת-ייחוד: [docs/prior-art.md](./docs/prior-art.md).
