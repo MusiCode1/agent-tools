@@ -10,7 +10,7 @@
 דרך `input text`. root נדרש רק ל-verify המקדים ול--remove-lock.
 """
 from __future__ import annotations
-import argparse, json, os, re, subprocess, sys, time
+import argparse, getpass, json, os, re, subprocess, sys, time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -236,12 +236,42 @@ def resolve_device(name, args):
 
 
 # ---------- main ----------
+ASK = "\0ASK"  # דגל-סוג ללא ערך ⇒ הקלדה מוסתרת
+
+
+def resolve_credential(args, ssh, bw_name):
+    """סדר-עדיפות: ערך ישיר בדגל → הקלדה מוסתרת → ביטוורדן.
+
+    ערך ישיר כארגומנט נראה ב-ps/היסטוריית-shell; לכן דגל-סוג בלי ערך
+    (למשל `--pattern` לבד) שואל בהקלדה מוסתרת (getpass)."""
+    for t in ("pattern", "pin", "password"):
+        v = getattr(args, t)
+        if v is None:
+            continue
+        if v == ASK:
+            v = getpass.getpass(f"{t} ל-{ssh} (מוסתר): ")
+        if not v:
+            die("לא הוזן קרדנציאל")
+        return t, v, "direct"
+    # נפילה לביטוורדן — רק אם לא נמסר קוד ישיר
+    if not bw_unlocked():
+        die("כספת ביטוורדן נעולה. הרץ בטרמינל שלך: bw-mcp-unlock (כלל 120), "
+            "או העבר את הקוד ישירות עם --pattern/--pin/--password.")
+    item = bw_item(bw_name)
+    t, v = cred_from_item(item, args.type)
+    return t, v, "bitwarden"
+
+
 def main():
     p = argparse.ArgumentParser(
         prog="android-unlock",
         description="הזנת תבנית/PIN/סיסמה למכשיר אנדרואיד מרוחק (קרדנציאל מביטוורדן).")
     p.add_argument("device", help="שם מכשיר (alias ב-ssh config + פריט ביטוורדן)")
     p.add_argument("--type", choices=list(CRED_FIELDS), help="סוג הקרדנציאל (ברירת-מחדל: זיהוי אוטומטי)")
+    g = p.add_argument_group("קרדנציאל ישיר (עוקף ביטוורדן; בלי ערך ⇒ הקלדה מוסתרת)")
+    g.add_argument("--pattern", nargs="?", const=ASK, help="תבנית (רצף ספרות 1-9)")
+    g.add_argument("--pin", nargs="?", const=ASK, help="PIN")
+    g.add_argument("--password", nargs="?", const=ASK, help="סיסמה")
     p.add_argument("--ssh", help="ssh alias (עוקף את הרישום)")
     p.add_argument("--via", choices=["auto", "root", "rish", "none"], help="עטיפת-הרצה על המכשיר")
     p.add_argument("--bw-item", dest="bw_item", help="שם פריט ביטוורדן (ברירת-מחדל: שם המכשיר)")
@@ -251,13 +281,9 @@ def main():
     p.add_argument("--dry-run", action="store_true", help="recon בלבד — בלי הזרקה")
     args = p.parse_args()
 
-    if not bw_unlocked():
-        die("כספת ביטוורדן נעולה. הרץ בטרמינל שלך: bw-mcp-unlock  (כלל 120), ואז שוב.")
-
     ssh, via, bw_name = resolve_device(args.device, args)
-    item = bw_item(bw_name)
-    ctype, cred = cred_from_item(item, args.type)
-    log(f"מכשיר: {args.device}  ·  ssh={ssh}  ·  via={via}  ·  סוג={ctype}")
+    ctype, cred, source = resolve_credential(args, ssh, bw_name)
+    log(f"מכשיר: {args.device}  ·  ssh={ssh}  ·  via={via}  ·  סוג={ctype}  ·  מקור={source}")
 
     dev = Device(ssh, via)
     dev.detect()
@@ -279,7 +305,7 @@ def main():
         if verify_credential(dev, cred):
             log("  ✓ הקרדנציאל השמור אומת מול locksettings")
         else:
-            die("הקרדנציאל בביטוורדן לא עבר verify על המכשיר — עצירה לפני הזרקה (סכנת נעילת-השהיה).")
+            die(f"הקרדנציאל ({source}) לא עבר verify על המכשיר — עצירה לפני הזרקה (סכנת נעילת-השהיה).")
 
     if args.remove_lock:
         if not dev.root:

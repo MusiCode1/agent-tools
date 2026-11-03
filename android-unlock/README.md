@@ -24,14 +24,23 @@ root נדרש **רק** ל-`verify` המקדים ול-`--remove-lock` — לא ל
 ## שימוש
 
 ```bash
-android-unlock liam-tablet              # זיהוי-אוטומטי של סוג-הנעילה מהפריט
-android-unlock liam-tablet --type pattern
-android-unlock myphone  --dry-run       # recon בלבד: keyguard, bounds, מספר-נקודות
-android-unlock liam-tablet --remove-lock   # 🛑 הסרת הנעילה לגמרי (דורש root)
+# מכשיר רשום (קוד מביטוורדן, שום סוד בשורת-הפקודה):
+android-unlock liam-tablet
+# קוד ישיר — בלי ערך ⇒ הקלדה מוסתרת (לא נכנס ל-ps/היסטוריה):
+android-unlock liam-tablet --pattern
+# קוד ישיר עם ערך — לסקריפטים (⚠️ נראה ב-ps/היסטוריה):
+android-unlock my-new-phone --ssh some-alias --pin 4721
+android-unlock liam-tablet --dry-run        # recon בלבד
+android-unlock liam-tablet --remove-lock    # 🛑 הסרת הנעילה לגמרי (דורש root)
 ```
 
-דגלים: `--type {pattern,pin,password}` · `--ssh ALIAS` · `--via {auto,root,rish,none}`
-· `--bw-item NAME` · `--no-verify` · `--force` (גם בשיחה) · `--dry-run` · `--remove-lock`.
+**מקור הקרדנציאל, לפי סדר-עדיפות:** דגל ישיר עם ערך → דגל ישיר בלי ערך (הקלדה
+מוסתרת) → ביטוורדן. כלומר ביטוורדן הוא רק נוחות למכשיר רשום; תמיד אפשר פשוט
+להעביר את הקוד.
+
+דגלים: `--pattern [VAL]` · `--pin [VAL]` · `--password [VAL]` · `--type {pattern,pin,password}`
+· `--ssh ALIAS` · `--via {auto,root,rish,none}` · `--bw-item NAME` · `--no-verify`
+· `--force` (גם בשיחה) · `--dry-run` · `--remove-lock`.
 
 ## רישום מכשירים — `devices.json`
 
@@ -39,7 +48,7 @@ android-unlock liam-tablet --remove-lock   # 🛑 הסרת הנעילה לגמר
 ‏`ssh`/`bw_item` = שם המכשיר, `via=auto` (מנסה `su -c id`, אחרת `$HOME/rish`,
 אחרת shell רגיל).
 
-## קרדנציאל — בביטוורדן בלבד
+## קרדנציאל — ישיר או מביטוורדן
 
 פריט לכל מכשיר, עם אחד או יותר מהשדות המוסתרים:
 
