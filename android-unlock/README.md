@@ -1,3 +1,5 @@
+> ℹ️ **הגרסה הציבורית (Node/npx) חיה בריפו נפרד:** [MusiCode1/adb-unlock](https://github.com/MusiCode1/adb-unlock) — ‏`npx adb-unlock`. התיקייה הזאת היא גרסת-ה-Bun הפנימית המקורית.
+
 # android-unlock
 
 הזנת **תבנית / PIN / סיסמה** למכשיר אנדרואיד מרוחק, כדי לבטל את ה-keyguard
