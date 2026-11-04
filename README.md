@@ -9,6 +9,7 @@
 | `agents-kb-tools/` | כלי בסיס-הידע (`kb-build-agents`, `kb-wiki-index`, `kb-hygiene`…) |
 | `linux-gui/` | קונטיינר דפדפן (webtop+Chrome+playwright-cli) |
 | `android-unlock/` | הזנת תבנית/PIN/סיסמה למכשיר אנדרואיד מרוחק — TS/Bun, SSH או ADB, מסלול עץ-נגישות (קרדנציאל מביטוורדן או ישיר) |
+| `ask/` | חיפוש מאוחד בכל מאגרי הידע, עם הקשר סביב המילה (`ask "מונח"`) |
 | `recoll/` | קונפיג recoll (‏`recoll.conf` + `fields`/`backends`/`mimemap` למופעים) — **לא** האינדקסים |
 
 ## איך הם מתחברים

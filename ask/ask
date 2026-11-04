@@ -1,0 +1,225 @@
+#!/usr/bin/env python3
+"""ask — חיפוש אחד בכל מאגרי הידע, עם בלוק הקשר סביב המילה.
+
+מקורות: knowledge (~/.recoll) · sessions (agent-sessions DB) · diary (~/.recoll-diary).
+🛑 diary לעולם אינו בברירת-מחדל — ראו agents-config .../rules/80-text-search.md.
+"""
+import argparse, html, json, os, re, sqlite3, sys, time
+
+HOME = os.path.expanduser("~")
+CONF_KNOW = os.path.join(HOME, ".recoll")
+CONF_DIARY = os.path.join(HOME, ".recoll-diary")
+CFG = os.path.join(HOME, ".config/agent-sessions/config.json")
+DB_DEFAULT = os.path.join(HOME, ".local/state/agent-sessions/sessions.db")
+SOURCES = ("knowledge", "sessions", "diary")
+HL_OPEN, HL_CLOSE = "«", "»"
+SCAN_STEPS = (40, 200, 800)          # סריקה הדרגתית: rust דורש 400+, codeshark די לו ב-40
+
+
+class _Quiet:
+    """recoll מדפיס ':3:../common/rclinit.cpp:420::Recoll 1.43…' ל-fd 2 ברמת C.
+    הפניה של sys.stderr אינה מספיקה — צריך להחליף את תיאור-הקובץ עצמו."""
+    def __enter__(self):
+        self._saved = os.dup(2)
+        self._null = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(self._null, 2)
+        return self
+
+    def __exit__(self, *a):
+        os.dup2(self._saved, 2)
+        os.close(self._null); os.close(self._saved)
+        return False
+
+
+def die(msg, code=2):
+    print(f"ask: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def sessions_db():
+    """נתיב ה-DB מהקונפיג ולא מנתיב קשיח — הסכמה שייכת לריפו אחר."""
+    try:
+        with open(CFG, encoding="utf-8") as f:
+            p = json.load(f).get("db_path")
+        if p:
+            return os.path.expanduser(p)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        die(f"קונפיג agent-sessions פגום ({CFG}): {e}")
+    return DB_DEFAULT
+
+
+def word_re(term):
+    """גבול-מילה שמכבד עברית: \\b של פייתון אינו מטפל ב-U+0590..U+05FF."""
+    core = "|".join(re.escape(t) for t in term.split() if t) or re.escape(term)
+    return re.compile(rf"(?<![\w֐-׿])(?:{core})(?![\w֐-׿])", re.I)
+
+
+def clean(text):
+    """🛑 להסיר את סימני ההדגשה לפני בדיקת מילה-שלמה.
+    t«rust»cache נראה כמילה שלמה אם בודקים אחרי העטיפה — נמדד ונשבר כך פעם אחת."""
+    return html.unescape(text.replace(HL_OPEN, "").replace(HL_CLOSE, ""))
+
+
+def search_recoll(confdir, term, limit, ctx, label, stem=False):
+    try:
+        from recoll import recoll
+    except ImportError:
+        die("מודול recoll חסר — apt install python3-recoll")
+    if not os.path.isdir(confdir):
+        return {"source": label, "total": 0, "hits": [], "error": f"אין אינדקס ב-{confdir}"}
+    with _Quiet():
+        db = recoll.connect(confdir=confdir)
+    q = db.query()
+    # 🛑 stemming=0 — ברירת-המחדל של ה-API מרחיבה inotify ל-notify/notified/notifier
+    # ומחזירה 1,892 במקום 52. recollq אינו עושה זאת, ו-80-text-search קובע
+    # ש-recoll הוא צורה-מדויקת. --stem מחזיר את ההרחבה למי שרוצה אותה.
+    total = q.execute(term, stemming=1 if stem else 0)
+    hits = []
+    for doc in q:
+        url = (doc.get("url") or "").replace("file://", "")
+        snips = []
+        for ln, _t, txt in q.getsnippets(doc, maxoccs=3, ctxwords=ctx, nohl=True):
+            snips.append({"line": ln, "text": " ".join(html.unescape(txt).split())})
+        hits.append({
+            "path": os.path.relpath(url, HOME) if url.startswith(HOME) else url,
+            "title": doc.get("title") or "", "space": doc.get("space") or "",
+            "lifecycle": doc.get("lifecycle") or "", "mtype": doc.get("mtype") or "",
+            "snippets": snips[:2],
+        })
+        if len(hits) >= limit:
+            break
+    return {"source": label, "total": total, "hits": hits}
+
+
+def search_sessions(term, limit, ctx, filters, whole_word):
+    db = sessions_db()
+    if not os.path.exists(db):
+        return {"source": "sessions", "total": 0, "hits": [], "error": f"אין DB ב-{db}"}
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    where, params = ["messages_fts match ?"], [term]
+    for col, key in (("m.role", "role"), ("s.cli", "cli"), ("s.project", "project")):
+        if filters.get(key):
+            where.append(f"{col} = ?"); params.append(filters[key])
+    if filters.get("since"):
+        where.append("m.ts >= ?"); params.append(int(time.mktime(time.strptime(filters["since"], "%Y-%m-%d")) * 1000))
+    sql = (f"select m.session_id, m.role, s.project, s.cli, m.ts, "
+           f"snippet(messages_fts,0,'{HL_OPEN}','{HL_CLOSE}','…',{min(max(ctx * 5, 10), 64)}) "
+           "from messages_fts f join messages m on m.rowid=f.rowid "
+           "join sessions s on s.session_id=m.session_id "
+           f"where {' and '.join(where)} limit ?")
+    total = con.execute("select count(*) from messages_fts f join messages m on m.rowid=f.rowid "
+                        "where messages_fts match ?", [term]).fetchone()[0]
+    rx = word_re(term) if whole_word else None
+    hits, scanned = [], 0
+    for cap in SCAN_STEPS:                       # הדרגתי: מונח נפוץ משלם רק מה שצריך
+        rows = con.execute(sql, params + [cap]).fetchall()
+        hits, scanned = [], len(rows)
+        for sid, role, proj, cli, ts, snip in rows:
+            txt = clean(snip or "")
+            if rx and not rx.search(txt):
+                continue
+            hits.append({"session": sid, "short": short_sid(sid), "role": role, "project": proj, "cli": cli,
+                         "ts": ts, "text": " ".join(txt.split())})
+            if len(hits) >= limit:
+                break
+        if len(hits) >= limit or scanned < cap:
+            break
+    return {"source": "sessions", "total": total, "hits": hits, "scanned": scanned}
+
+
+def short_sid(sid):
+    """session_id הוא נתיב (--home-user--/2026-07-30T…_019fb35a…) או UUID. להציג מזהה קריא."""
+    tail = sid.rsplit("/", 1)[-1]
+    m = re.search(r"([0-9a-f]{8})(?:[-_][0-9a-f]{4}){0,3}", tail)
+    return m.group(1) if m else tail[:12]
+
+
+def fmt_ts(ms):
+    return time.strftime("%d/%m", time.localtime(ms / 1000)) if ms else "?"
+
+
+def render(term, results, used, ctx, jsonout):
+    if jsonout:
+        print(json.dumps({"term": term, "sources": used, "context": ctx,
+                          "results": results}, ensure_ascii=False))
+        return
+    counts = " · ".join(f"{r['source']} {r['total']:,}" for r in results)
+    marks = " · ".join(("🔒 " if s == "diary" else "") + s for s in used)
+    print(f"{term} · {counts}    [מקורות: {marks} · ctx={ctx}]")
+    for r in results:
+        if r.get("error"):
+            print(f"\n⚠️  {r['source']}: {r['error']}")
+            continue
+        if not r["hits"]:
+            print(f"\n— {r['source']}: אין תוצאות" +
+                  (f" (נסרקו {r['scanned']})" if r.get("scanned") else ""))
+            continue
+        print(f"\n── {r['source']} ──")
+        for h in r["hits"]:
+            if r["source"] == "sessions":
+                print(f"  {fmt_ts(h['ts'])} · {h['project']} · {h['cli']}"
+                      f"{' ' * 4}sq --session {h['short']}")
+                print(f"     {h['text'][:240]}")
+            else:
+                tags = "·".join(x for x in (h["space"], h["lifecycle"]) if x)
+                print(f"  {h['path']}" + (f"   [{tags}]" if tags else ""))
+                for s in h["snippets"]:
+                    ln = f"L{s['line']}" if s["line"] else "  "
+                    print(f"     {ln:<6}{s['text'][:170]}")
+                if not h["snippets"]:
+                    print("     (אין הקשר — שאילתת שדה בלבד, בלי מונח תוכן)")
+
+
+def main():
+    p = argparse.ArgumentParser(
+        prog="ask", add_help=True,
+        description="חיפוש אחד בכל מאגרי הידע, עם בלוק הקשר סביב המילה.",
+        epilog="ברירת מחדל: knowledge + sessions. diary דורש --diary במפורש.")
+    p.add_argument("term", help="מונח חיפוש. מרכאות כפולות = ביטוי מדויק.")
+    p.add_argument("--knowledge", action="store_true", help="ויקי, נהלים וקוד (~/.recoll)")
+    p.add_argument("--sessions", action="store_true", help="ארכיון שיחות הסוכנים")
+    p.add_argument("--diary", action="store_true", help="🔒 יומן וכספת אישית — מפורש בלבד")
+    p.add_argument("--src", metavar="A,B", help="בורר כללי: knowledge,sessions,diary")
+    p.add_argument("-n", "--limit", type=int, default=8, metavar="N", help="תוצאות לכל מקור (8)")
+    p.add_argument("--context", type=int, default=12, metavar="W",
+                   help="מילות הקשר סביב המילה (12). 4≈50 תווים · 30≈500. "
+                        "בשיחות מתורגם לטוקני-trigram ונחסם ב-64 (מגבלת SQLite)")
+    p.add_argument("--project", metavar="X"); p.add_argument("--cli", metavar="Y")
+    p.add_argument("--role", metavar="R"); p.add_argument("--since", metavar="YYYY-MM-DD")
+    p.add_argument("--no-word", action="store_true",
+                   help="בלי סינון מילה-שלמה בשיחות (ה-FTS הוא trigram: rust⊂trust)")
+    p.add_argument("--stem", action="store_true",
+                   help="הרחבת גזירה (inotify→notify/notifier). כבוי — recoll הוא צורה מדויקת")
+    p.add_argument("--json", action="store_true")
+    args = p.parse_args()          # 🛑 argparse נכשל על דגל לא-מוכר — ולא בולע אותו בשקט
+
+    used = [s for s, on in (("knowledge", args.knowledge), ("sessions", args.sessions),
+                            ("diary", args.diary)) if on]
+    if args.src:
+        for s in (x.strip() for x in args.src.split(",") if x.strip()):
+            if s not in SOURCES:
+                die(f"מקור לא מוכר: {s!r} (אפשריים: {', '.join(SOURCES)})")
+            if s not in used:
+                used.append(s)
+    if not used:
+        used = ["knowledge", "sessions"]          # diary לעולם לא כאן
+
+    ctx = max(1, args.context)
+    results = []
+    for s in used:
+        if s == "knowledge":
+            results.append(search_recoll(CONF_KNOW, args.term, args.limit, ctx, "knowledge", args.stem))
+        elif s == "diary":
+            results.append(search_recoll(CONF_DIARY, args.term, args.limit, ctx, "diary", args.stem))
+        else:
+            results.append(search_sessions(args.term, args.limit, ctx,
+                                           {"project": args.project, "cli": args.cli,
+                                            "role": args.role, "since": args.since},
+                                           not args.no_word))
+    render(args.term, results, used, ctx, args.json)
+
+
+if __name__ == "__main__":
+    main()
