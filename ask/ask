@@ -76,21 +76,30 @@ def search_recoll(confdir, term, limit, ctx, label, stem=False):
     # ומחזירה 1,892 במקום 52. recollq אינו עושה זאת, ו-80-text-search קובע
     # ש-recoll הוא צורה-מדויקת. --stem מחזיר את ההרחבה למי שרוצה אותה.
     total = q.execute(term, stemming=1 if stem else 0)
-    hits = []
+    # 🛑 איחוד תוך-כדי, לא אחרי: getsnippets עולה, ולכן כפילות נזרקת לפני
+    # שמשלמים עליה. ותקרת-סריקה — אחרת תוצאה עם 200 כפילויות סורקת הכול.
+    hits, seen, scanned = [], {}, 0
+    cap = max(limit * 6, 40)
     for doc in q:
+        scanned += 1
         url = (doc.get("url") or "").replace("file://", "")
-        snips = []
-        for ln, _t, txt in q.getsnippets(doc, maxoccs=3, ctxwords=ctx, nohl=True):
-            snips.append({"line": ln, "text": " ".join(html.unescape(txt).split())})
-        hits.append({
-            "path": os.path.relpath(url, HOME) if url.startswith(HOME) else url,
-            "title": doc.get("title") or "", "space": doc.get("space") or "",
-            "lifecycle": doc.get("lifecycle") or "", "mtype": doc.get("mtype") or "",
-            "snippets": snips[:2],
-        })
-        if len(hits) >= limit:
+        key = os.path.basename(url)
+        if key in seen:
+            seen[key]["dupes"] = seen[key].get("dupes", 0) + 1
+            if scanned >= cap:
+                break
+            continue
+        snips = [{"line": ln, "text": " ".join(html.unescape(txt).split())}
+                 for ln, _t, txt in q.getsnippets(doc, maxoccs=2, ctxwords=ctx, nohl=True)]
+        h = {"path": os.path.relpath(url, HOME) if url.startswith(HOME) else url,
+             "title": doc.get("title") or "", "space": doc.get("space") or "",
+             "lifecycle": doc.get("lifecycle") or "", "mtype": doc.get("mtype") or "",
+             "snippets": snips[:2]}
+        seen[key] = h
+        hits.append(h)
+        if len(hits) >= limit or scanned >= cap:
             break
-    return {"source": label, "total": total, "hits": hits}
+    return {"source": label, "total": total, "hits": hits, "scanned": scanned}
 
 
 def search_sessions(term, limit, ctx, filters, whole_word):
@@ -109,8 +118,12 @@ def search_sessions(term, limit, ctx, filters, whole_word):
            "from messages_fts f join messages m on m.rowid=f.rowid "
            "join sessions s on s.session_id=m.session_id "
            f"where {' and '.join(where)} limit ?")
-    total = con.execute("select count(*) from messages_fts f join messages m on m.rowid=f.rowid "
-                        "where messages_fts match ?", [term]).fetchone()[0]
+    # ספירה מלאה עולה 1.1ש על מונח נפוץ (worktree = 66,767). חוסמים ב-10,000
+    # ומסמנים "+" — המספר המדויק אינו שווה שנייה בכל חיפוש.
+    CAP_COUNT = 10000
+    total = con.execute("select count(*) from (select 1 from messages_fts "
+                        f"where messages_fts match ? limit {CAP_COUNT})", [term]).fetchone()[0]
+    total_capped = total >= CAP_COUNT
     rx = word_re(term) if whole_word else None
     hits, scanned = [], 0
     for cap in SCAN_STEPS:                       # הדרגתי: מונח נפוץ משלם רק מה שצריך
@@ -126,7 +139,8 @@ def search_sessions(term, limit, ctx, filters, whole_word):
                 break
         if len(hits) >= limit or scanned < cap:
             break
-    return {"source": "sessions", "total": total, "hits": hits, "scanned": scanned}
+    return {"source": "sessions", "total": total, "capped": total_capped,
+            "hits": hits, "scanned": scanned}
 
 
 def short_sid(sid):
@@ -136,18 +150,83 @@ def short_sid(sid):
     return m.group(1) if m else tail[:12]
 
 
+def index_lag(confdir):
+    """האינדקס הוא cache. עריכת קובץ נקלטת מיד, אבל העברת תיקיות שוברת את
+    המוניטור (-n) — נמדד: 152 נהלים שהועברו נעלמו מהחיפוש בלי שום שגיאה."""
+    try:
+        idx = max(os.path.getmtime(os.path.join(confdir, f))
+                  for f in os.listdir(confdir) if f.startswith("xapiandb") or f == "xapiandb")
+    except Exception:
+        try:
+            idx = os.path.getmtime(os.path.join(confdir, "xapiandb"))
+        except Exception:
+            return None
+    hours = (time.time() - idx) / 3600
+    return hours if hours > 24 else None
+
+
+def show_session(sid_frag, jsonout):
+    """ask session <id> — קריאת סשן מלא. מקבל גם קיצור (8 תווים מפלט החיפוש),
+    מה ש-sq --session אינו עושה: הוא דורש את המזהה המלא."""
+    db = sessions_db()
+    if not os.path.exists(db):
+        die(f"אין DB ב-{db}")
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    rows = con.execute("select session_id, cli, project, cwd, started_at, title from sessions "
+                       "where session_id = ? or session_id like ?",
+                       (sid_frag, f"%{sid_frag}%")).fetchall()
+    if not rows:
+        die(f"אין סשן התואם {sid_frag!r}")
+    # ה-DB מחזיק סשן גם לפי נתיב וגם לפי UUID — נמדד: 611 "התנגשויות" ב-8 תווים,
+    # ורובן אותו סשן פעמיים. מאחדים לפי המזהה המחולץ ובוחרים את העשיר ביותר.
+    if len(rows) > 1:
+        by_id = {}
+        for r in rows:
+            by_id.setdefault(short_sid(r[0]), []).append(r)
+        if len(by_id) == 1:
+            rows = [max(next(iter(by_id.values())),
+                        key=lambda r: con.execute(
+                            "select count(*) from messages where session_id = ?", (r[0],)
+                        ).fetchone()[0])]
+    if len(rows) > 1:
+        print(f"{len(rows)} סשנים תואמים — להרחיב את המזהה:", file=sys.stderr)
+        for r in rows[:8]:
+            ttl = " ".join((r[5] or "").split())[:52]
+            print(f"  {short_sid(r[0])}  {r[2]} · {r[1]} · {ttl}", file=sys.stderr)
+        sys.exit(2)
+    sid, cli, proj, cwd, started, title = rows[0]
+    msgs = con.execute("select role, model, ts, text from messages where session_id = ? order by seq",
+                       (sid,)).fetchall()
+    if jsonout:
+        print(json.dumps({"session": {"id": sid, "cli": cli, "project": proj, "cwd": cwd,
+                                      "started_at": started, "title": title},
+                          "messages": [{"role": r, "model": m, "ts": t, "text": x}
+                                       for r, m, t, x in msgs]}, ensure_ascii=False))
+        return
+    print(f"# {' '.join((title or '(ללא כותרת)').split())}")
+    print(f"{cli} · {proj} · {cwd or '?'} · {len(msgs)} הודעות")
+    print("─" * 60)
+    for role, model, ts, text in msgs:
+        print(f"\n## {role}{f' ({model})' if model else ''} · {fmt_ts(ts)}")
+        print(text)
+
+
 def fmt_ts(ms):
     return time.strftime("%d/%m", time.localtime(ms / 1000)) if ms else "?"
 
 
-def render(term, results, used, ctx, jsonout):
+def render(term, results, used, ctx, jsonout, lags=()):
     if jsonout:
         print(json.dumps({"term": term, "sources": used, "context": ctx,
                           "results": results}, ensure_ascii=False))
         return
-    counts = " · ".join(f"{r['source']} {r['total']:,}" for r in results)
+    counts = " · ".join(f"{r['source']} {r['total']:,}{'+' if r.get('capped') else ''}"
+                        for r in results)
     marks = " · ".join(("🔒 " if s == "diary" else "") + s for s in used)
     print(f"{term} · {counts}    [מקורות: {marks} · ctx={ctx}]")
+    for lag_src, lag_h in lags:
+        print(f"⚠️  אינדקס {lag_src} לא עודכן {lag_h:.0f} שעות — "
+              f"אחרי שינוי מבנה נדרש recollindex מלא")
     for r in results:
         if r.get("error"):
             print(f"\n⚠️  {r['source']}: {r['error']}")
@@ -160,11 +239,12 @@ def render(term, results, used, ctx, jsonout):
         for h in r["hits"]:
             if r["source"] == "sessions":
                 print(f"  {fmt_ts(h['ts'])} · {h['project']} · {h['cli']}"
-                      f"{' ' * 4}sq --session {h['short']}")
+                      f"{' ' * 4}ask session {h['short']}")
                 print(f"     {h['text'][:240]}")
             else:
                 tags = "·".join(x for x in (h["space"], h["lifecycle"]) if x)
-                print(f"  {h['path']}" + (f"   [{tags}]" if tags else ""))
+                dup = f"  (+{h['dupes']} ענפים)" if h.get("dupes") else ""
+                print(f"  {h['path']}" + (f"   [{tags}]" if tags else "") + dup)
                 for s in h["snippets"]:
                     ln = f"L{s['line']}" if s["line"] else "  "
                     print(f"     {ln:<6}{s['text'][:170]}")
@@ -173,10 +253,23 @@ def render(term, results, used, ctx, jsonout):
 
 
 def main():
+    # ‏`ask session <id>` כתת-פקודה. 🛑 לחיפוש המילה "session" — `ask -- session`,
+    # והתחביר הזה מתועד ב---help כדי שלא ייבלע בשקט.
+    if len(sys.argv) > 2 and sys.argv[1] == "session":
+        sp = argparse.ArgumentParser(prog="ask session", description="קריאת סשן מלא מהארכיון")
+        sp.add_argument("id", help="מזהה סשן — מלא או קיצור מפלט החיפוש")
+        sp.add_argument("--json", action="store_true")
+        a = sp.parse_args(sys.argv[2:])
+        return show_session(a.id, a.json)
+    if len(sys.argv) > 1 and sys.argv[1] == "--":
+        sys.argv.pop(1)
+
     p = argparse.ArgumentParser(
         prog="ask", add_help=True,
         description="חיפוש אחד בכל מאגרי הידע, עם בלוק הקשר סביב המילה.",
-        epilog="ברירת מחדל: knowledge + sessions. diary דורש --diary במפורש.")
+        epilog="ברירת מחדל: knowledge + sessions. diary דורש --diary במפורש.  "
+               "תת-פקודה: ask session <id> — קריאת סשן מלא (מקבל גם קיצור).  "
+               "לחיפוש המילה session עצמה: ask -- session")
     p.add_argument("term", help="מונח חיפוש. מרכאות כפולות = ביטוי מדויק.")
     p.add_argument("--knowledge", action="store_true", help="ויקי, נהלים וקוד (~/.recoll)")
     p.add_argument("--sessions", action="store_true", help="ארכיון שיחות הסוכנים")
@@ -218,7 +311,13 @@ def main():
                                            {"project": args.project, "cli": args.cli,
                                             "role": args.role, "since": args.since},
                                            not args.no_word))
-    render(args.term, results, used, ctx, args.json)
+    lags = []
+    for s_name, conf in (("knowledge", CONF_KNOW), ("diary", CONF_DIARY)):
+        if s_name in used:
+            h = index_lag(conf)
+            if h:
+                lags.append((s_name, h))
+    render(args.term, results, used, ctx, args.json, lags)
 
 
 if __name__ == "__main__":
