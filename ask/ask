@@ -108,32 +108,38 @@ def search_sessions(term, limit, ctx, filters, whole_word):
         return {"source": "sessions", "total": 0, "hits": [], "error": f"אין DB ב-{db}"}
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     where, params = ["messages_fts match ?"], [term]
-    for col, key in (("m.role", "role"), ("s.cli", "cli"), ("s.project", "project")):
+    for col, key in (("m.role", "role"), ("s.cli", "cli")):
         if filters.get(key):
             where.append(f"{col} = ?"); params.append(filters[key])
+    if filters.get("project"):
+        where.append("(s.project like ? or s.cwd like ?)")
+        params.extend((f"%{filters['project']}%", f"%{filters['project']}%"))
     if filters.get("since"):
         where.append("m.ts >= ?"); params.append(int(time.mktime(time.strptime(filters["since"], "%Y-%m-%d")) * 1000))
-    sql = (f"select m.session_id, m.role, s.project, s.cli, m.ts, "
+    sql = (f"select m.session_id, m.role, s.project, s.cli, m.ts, s.title, s.cwd, "
            f"snippet(messages_fts,0,'{HL_OPEN}','{HL_CLOSE}','…',{min(max(ctx * 5, 10), 64)}) "
            "from messages_fts f join messages m on m.rowid=f.rowid "
            "join sessions s on s.session_id=m.session_id "
-           f"where {' and '.join(where)} limit ?")
+           f"where {' and '.join(where)} order by f.rowid desc limit ?")
     # ספירה מלאה עולה 1.1ש על מונח נפוץ (worktree = 66,767). חוסמים ב-10,000
     # ומסמנים "+" — המספר המדויק אינו שווה שנייה בכל חיפוש.
     CAP_COUNT = 10000
-    total = con.execute("select count(*) from (select 1 from messages_fts "
-                        f"where messages_fts match ? limit {CAP_COUNT})", [term]).fetchone()[0]
+    total = con.execute("select count(*) from (select 1 from messages_fts f "
+                        "join messages m on m.rowid=f.rowid "
+                        "join sessions s on s.session_id=m.session_id "
+                        f"where {' and '.join(where)} limit {CAP_COUNT})", params).fetchone()[0]
     total_capped = total >= CAP_COUNT
     rx = word_re(term) if whole_word else None
     hits, scanned = [], 0
     for cap in SCAN_STEPS:                       # הדרגתי: מונח נפוץ משלם רק מה שצריך
         rows = con.execute(sql, params + [cap]).fetchall()
         hits, scanned = [], len(rows)
-        for sid, role, proj, cli, ts, snip in rows:
+        for sid, role, proj, cli, ts, title, cwd, snip in rows:
             txt = clean(snip or "")
             if rx and not rx.search(txt):
                 continue
             hits.append({"session": sid, "short": short_sid(sid), "role": role, "project": proj, "cli": cli,
+                         "title": title, "cwd": cwd,
                          "ts": ts, "text": " ".join(txt.split())})
             if len(hits) >= limit:
                 break
@@ -172,9 +178,13 @@ def show_session(sid_frag, jsonout):
     if not os.path.exists(db):
         die(f"אין DB ב-{db}")
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    rows = con.execute("select session_id, cli, project, cwd, started_at, title from sessions "
-                       "where session_id = ? or session_id like ?",
-                       (sid_frag, f"%{sid_frag}%")).fetchall()
+    selection = "select session_id, cli, project, cwd, started_at, title from sessions "
+    rows = con.execute(selection + "where session_id = ?", (sid_frag,)).fetchall()
+    if not rows:
+        # Search-result short IDs belong to the filename, not to a shared parent
+        # directory. A broad LIKE alone can match unrelated siblings.
+        candidates = con.execute(selection + "where session_id like ?", (f"%{sid_frag}%",)).fetchall()
+        rows = [row for row in candidates if sid_frag in row[0].rsplit("/", 1)[-1]]
     if not rows:
         die(f"אין סשן התואם {sid_frag!r}")
     # ה-DB מחזיק סשן גם לפי נתיב וגם לפי UUID — נמדד: 611 "התנגשויות" ב-8 תווים,
@@ -198,8 +208,9 @@ def show_session(sid_frag, jsonout):
     msgs = con.execute("select role, model, ts, text from messages where session_id = ? order by seq",
                        (sid,)).fetchall()
     if jsonout:
-        print(json.dumps({"session": {"id": sid, "cli": cli, "project": proj, "cwd": cwd,
-                                      "started_at": started, "title": title},
+        meta_cursor = con.execute("select * from sessions where session_id = ?", (sid,))
+        metadata = dict(zip((column[0] for column in meta_cursor.description), meta_cursor.fetchone()))
+        print(json.dumps({"session": {"id": sid, **metadata},
                           "messages": [{"role": r, "model": m, "ts": t, "text": x}
                                        for r, m, t, x in msgs]}, ensure_ascii=False))
         return
@@ -253,13 +264,14 @@ def render(term, results, used, ctx, jsonout, lags=()):
 
 
 def main():
-    # ‏`ask session <id>` כתת-פקודה — רק כשאחריה מזהה ולא דגל.
+    # ‏`ask session <id>` כתת-פקודה; -- מאפשר מזהה מלא שמתחיל במקף.
     # 🛑 המרכאות של ה-shell אינן מבדילות: `ask "session" -n 1` מגיע כ-
     # ['ask','session','-n','1'] בדיוק כמו בלעדיהן. לכן ההבחנה היא על
     # הארגומנט השני: דגל ⇒ חיפוש. `ask -- session` נשאר למקרה הנדיר
     # שבו מחפשים את הצירוף "session <משהו>" כטקסט.
     if (len(sys.argv) > 2 and sys.argv[1] == "session"
-            and not sys.argv[2].startswith("-")):
+            and (not sys.argv[2].startswith("-") or sys.argv[2] == "--"
+                 or (sys.argv[2] == "--json" and "--" in sys.argv[3:]))):
         sp = argparse.ArgumentParser(prog="ask session", description="קריאת סשן מלא מהארכיון")
         sp.add_argument("id", help="מזהה סשן — מלא או קיצור מפלט החיפוש")
         sp.add_argument("--json", action="store_true")

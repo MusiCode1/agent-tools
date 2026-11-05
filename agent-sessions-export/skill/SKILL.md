@@ -1,6 +1,6 @@
 ---
 name: agent-sessions
-description: Search and archive local coding-agent session history in Hebrew or English via recoll, across Claude Code, Codex, Cursor, opencode, grok, Gemini/Antigravity, pi, omp and more. Use when an agent needs to find what was done in a previous session, recover a conversation whose source file was deleted, read full per-session metadata (model, cost, tokens), or make the current conversation searchable right now. Prefer this over `cass search` for anything Hebrew — cass returns zero results for Hebrew queries.
+description: Search local coding-agent session history in Hebrew or English via ask, across Claude Code, Codex, Cursor, opencode, grok, Gemini/Antigravity, pi, omp and more. Use when an agent needs to find what was done in a previous session, recover a conversation whose source file was deleted, read per-session metadata, or make the current conversation searchable right now.
 ---
 
 # agent-sessions
@@ -17,7 +17,7 @@ grok · Gemini/Antigravity · pi · omp · hermes · openclaw · cline.
 > מאנדקס את `~/.recoll` ואת `~/.recoll-diary`, ואותו לא. ⇒ הוא החזיר
 > תוצאות בנות שישה שבועות בשקט.
 >
-> **לסשנים — `sq` (ה-DB).** הכרעת-משתמש: recoll אינו מאנדקס סשנים.
+> **לסשנים — `ask` (קורא את ה־DB).** הכרעת-משתמש: recoll אינו מאנדקס סשנים.
 > ‏`~/.recoll` הוא **ידע בלבד** (זו הסיבה המקורית לפיצול ב-08/09: 25,917
 > קבצי סשנים מול ~794 מסמכי ידע דחקו את הרנבוקים ל-2.5% מהתוצאות).
 >
@@ -25,27 +25,35 @@ grok · Gemini/Antigravity · pi · omp · hermes · openclaw · cline.
 > הסשנים — **חוץ מ-`tzlev-agent-sessions`** (נוצר 12/10, ההחרגה נשארה
 > על הנתיב הישן). נמדד: 2,101 קבצי-סשנים משם עדיין מאונדקסים.
 
-1. **לחיפוש בעברית — `recollq`, לא `cass`.** ‏`cass search` מחזירה **אפס
-   תוצאות** על כל שאילתה בעברית (הטוקנייזר שלה הוא `porter`, סטמר אנגלי).
-   נמדד: `מזגן` → cass 0, ‏recoll 44.
-2. **אין stemming עברי ב-Xapian.** החיפוש הוא **צורה מדויקת בלבד** —
-   `רענן` לא ימצא `ורענן`, `בריא` לא ימצא `בריאה`. חפש כמה נטיות, או
-   בחר מילה בלי אותיות שימוש.
+1. **לחיפוש סשנים בעברית — `ask`.** ‏`cass search` מחזירה אפס תוצאות בעברית,
+   ו־`recollq` כבר אינו מחפש באינדקס סשנים פעיל.
+2. **לחיפוש ידע — `recollq -c ~/.recoll`.** ב־Recoll אין stemming עברי;
+   כשמחפשים שם, נסה כמה נטיות. `ask` מחפש גם בו כברירת מחדל.
 
 
-## 🆕 ‏`sq` — חיפוש ב-DB, קריאת-כלי אחת במקום שלוש
+## חיפוש סשנים ב־`ask`
 
-מאז 11/10/2026 יש גם **DB**, שנבנה ע"י `agent-sessions-export.timer`
-כל 20 דקות. הוא **אינו מחליף** את recoll — הוא מקצר את הדפוס.
+ה־DB מתעדכן ע"י `agent-sessions-export.timer` כל 20 דקות. `ask` מחפש בו
+ובאינדקס הידע; `--sessions` מצמצם לסשנים בלבד. הוא מציג קטע הקשר ומזהה
+קצר שאפשר להעביר ל־`ask session`.
 
-### 🔑 איך מוצאים את הכלי ואת המסד
+```bash
+ask 'שיבוץ' --sessions
+ask 'שיבוץ' --sessions --role user --project tzlev --since 2026-09-01 -n 5
+ask session <short>          # השיחה המלאה; קיצור מפלט החיפוש
+ask 'שיבוץ' --sessions --json # פלט למכונה
+```
 
-**הכלי: פשוט `sq`.** יש עטיפה ב-PATH (`~/.local/bin/sq` → סימלינק לתוך
-`agent-sessions-export`). אין צורך לדעת נתיבים — `sq --stats` עובד תמיד,
-וזו גם הדרך לוודא שהמסד חי.
+### המסד
 
-🛑 **אל תניח נתיב-מסד קבוע.** הוא נפתר בשרשרת, ו**ברירת-המחדל אינה מה
-שבשימוש ברוב המכונות**:
+`ask` הוא נקודת הכניסה לחיפוש ולקריאת סשן. `ask session --json`
+מחזיר גם את כל שדות רשומת הסשן מה־DB. מזהה מלא שמתחיל במקף מעבירים
+אחרי `--`: ‏`ask session --json -- "$SID"`.
+
+🛑 **אל תניח נתיב-מסד קבוע.** `ask` קורא את `db_path` מתוך
+`~/.config/agent-sessions/config.json`, ואם הקובץ חסר — משתמש ב־
+`~/.local/state/agent-sessions/sessions.db`. שרשרת הקדימות של **היצואן**
+ושל כלי התחזוקה הישן היא:
 
 ```
 --db <path>  →  $AGENT_SESSIONS_DB  →  db_path ב-~/.config/agent-sessions/config.json
@@ -54,92 +62,74 @@ grok · Gemini/Antigravity · pi · omp · hermes · openclaw · cline.
 
 לראות את הנתיב בפועל: `grep db_path ~/.config/agent-sessions/config.json`.
 
-**על violate9 (נמדד 01/11/2026):** הקונפיג דורס לברירת-מחדל אחרת —
+**על violate9 (נמדד 01/11/2026):** הקונפיג מצביע על —
 `~/.local/state/agent-sessions/sessions.db` (2.9GB). התיקייה `~/.cache/agent-sessions/`
 **אינה קיימת** כאן; מי שיחפש אותה יסיק בטעות שאין מסד.
 
 ⚠️ **ואל תתבלבל עם** `~/.local/share/coding-agent-search/agent_search.db` —
 זה המסד של **`cass`**, כלי אחר. תוכנו קפוא מ-06/09/2026, אבל `export.ts`
 פותח אותו readonly ו**מת בלעדיו** ⇒ **אין למחוק אותו**: זה יעצור את
-הסנכרון כל 20 דקות ואת הדחיפה לארכיון.
+עדכון ה־DB כל 20 דקות.
 
 **הדפוס הישן:** `recollq` → נתיב → פתיחת ה-`.md` → `grep` בתוכו.
-**עם `sq`:** תוצאה אחת כוללת כבר את הקטע המודגש **ואת הקשר-הסשן**
-(תאריך · role · מודל · CLI · פרויקט · cwd · פקודת-המשך).
-
-```bash
-sq "שיבוץ"                                   # יש עטיפה ב-PATH
-sq "שיבוץ" --role user --project tzlev --since 2026-09-01 --limit 5
-sq --session <id>     # הסשן המלא
-sq --stats            # סקירת הקורפוס
-sq "x" --json         # פלט למכונה
-```
-
-**נתיב ה-DB** נקבע לפי: `--db` → ‏`$AGENT_SESSIONS_DB` → ‏`db_path`
-בקונפיג (`~/.config/agent-sessions/config.json`) → ברירת-מחדל
-`~/.cache/agent-sessions/sessions.db`.
+**עם `ask`:** התוצאה כוללת קטע הקשר, CLI, פרויקט ופקודת קריאה לסשן.
 
 🛑 **בקונטיינר של mission13 אין להשאיר אותו ב-`~/.cache`** — שם זה **אינו
 bind**, וה-DB נמחק בכל restart (ובנייה מחדש היא ~28 דקות). שם `db_path`
 מצביע ל-`~/projects/.agent-sessions/`, שהוא כן bind. אותו שיקול חל על
 העטיפה: היא חיה **בתוך הריפו** ולא ב-`~/.local/bin`, שגם הוא אינו bind.
 
-🔑 **הטוקנייזר הוא `trigram` — תת-מחרוזת, לא מילה שלמה.** ולכן, בניגוד
-ל-recoll ול-cass, **`שעות` מוצא גם `בשעות`** — אותיות-שימוש אינן מפריעות.
-המחיר: מינימום 3 תווים בשאילתה.
+ה־DB משתמש ב־`trigram`, ולכן הוא עשוי למצוא גם תת־מחרוזות. `ask` מסנן
+כברירת מחדל התאמות שאינן מילה שלמה; `--no-word` מבטל את הסינון כשצריך.
 
-### מתי recoll ומתי sq
+### מתי `ask` או `recollq`
 
 | | |
 |---|---|
-| **`sq`** | סשנים. מהיר (ms), מחזיר הקשר מלא, מסנן לפי role/פרויקט/תאריך, ‏`--json` |
-| **`recollq -c ~/.recoll`** | **ידע** — ויקי, רנבוקים, כספת, PDF. ‏`sq` אינו מכיר אותם |
+| **`ask`** | חיפוש בידע ובסשנים; `--sessions` לסשנים בלבד; `ask session <short>` לשיחה מלאה |
+| **`recollq -c ~/.recoll`** | חיפוש ישיר בידע כשנחוצים דגלים או פלט גולמי שאינם ב־`ask` |
 | ~~`recollq -c ~/.recoll-sessions`~~ | 🔴 **בוטל 24/10/2026.** האינדקס נמחק; הפקודה תחזיר אפס תוצאות |
 
 🛑 **מה שאין ב-DB:** פלט-כלי מלא יושב ב-`heavy` (דחוס, לא מאונדקס);
 ב-`text` יש רק סימון `[Tool: name]`. חיפוש אחרי תוכן של פלט-כלי לא
-יימצא ב-`sq`. ⚠️ **וגם לא ב-recoll יותר** — האינדקס של הסשנים נמחק.
+יימצא ב־`ask`. ⚠️ **וגם לא ב-recoll יותר** — האינדקס של הסשנים נמחק.
 לחיפוש בתוך פלט-כלי: `rg` ישירות על ריפו-הארכיון.
 
 ## חיפוש
 
 ```bash
-sq 'מונח'                             # ברירת-המחדל לסשנים
-sq 'מונח' --json                       # לעיבוד
+ask 'מונח'                            # ידע וסשנים
+ask 'מונח' --sessions                 # סשנים בלבד
+ask 'מונח' --sessions --json          # לעיבוד
 ```
 
 🛑 **הפקודות הישנות `recollq -c ~/.recoll-sessions` אינן עובדות יותר** —
-האינדקס נמחק 24/10/2026 (ראו למעלה). מי שצריך את קובץ-ה-`.md` עצמו:
-`sq --session <id>` מחזיר את הנתיב.
+האינדקס נמחק 24/10/2026 (ראו למעלה). לסשן מלא משתמשים ב־`ask session <short>`;
+הוא מציג את השיחה מתוך ה־DB, ואינו מחזיר נתיב לקובץ הארכיון.
 
-הנתיב עצמו הוא מטא-דאטה: `<repo>/data/<machine>/sessions/<project>/<agent>/<id>.md`
-מספר לך ריפו · מכונה · פרויקט · סוכן, בלי לפתוח כלום.
-
-צמצום לפרויקט או לסוכן — פשוט הוסף מילה לשאילתה:
+צמצום לפרויקט או ל־CLI נעשה בדגלים של `ask`:
 
 ```bash
-recollq -c ~/.recoll-sessions -n 10 'project-a ArkType'
-recollq -c ~/.recoll-sessions -n 10 'cursor-acp משימה'
+ask 'ArkType' --sessions --project project-a
+ask 'משימה' --sessions --cli cursor-acp
 ```
 
-⚠️ `dir:` לא עובד אמין כאן — עדיף `grep` על הפלט.
+`--project` מסנן לפי שם הפרויקט; ‏`--cli` דורש את שם ה־CLI המדויק
+שמופיע בתוצאות החיפוש.
 
 ## מטא-דאטה מלאה
 
-לכל `.md` יש `.json` תאום עם 26 שדות — מודל, עלות, טוקנים, ספירות כלים:
+מזהה הסשן מתקבל מתוצאת החיפוש. `ask session` מחזיר את השיחה גם כ־JSON.
+לשדות מלאים של רשומת ה־DB, כגון `usage` ו־`meta`, משתמשים ב־`ask`
+עם המזהה המלא שנמצא בפלט החיפוש. `--` נדרש כשהמזהה מתחיל במקף:
 
 ```bash
-MD=$(recollq -c ~/.recoll-sessions -n 1 -b 'מונח' | sed 's|^file://||' | grep '\.md$')
-JSON=$(echo "$MD" | sed 's|/sessions/|/meta/|; s|\.md$|.json|')
-
-jq '.session' "$JSON"                                  # מטא-דאטה
-jq -r '.messages[] | "\(.role): \(.content)"' "$JSON"  # השיחה כטקסט
+SID=$(ask 'מונח' --sessions --json | jq -r '.results[0].hits[0].session // empty')
+ask session --json -- "$SID" | jq -r '.messages[] | "\(.role): \(.text)"'
+ask session --json -- "$SID" | jq '.session'              # מטא-דאטה מלאה
 ```
 
-(אימות: `claude_code · project-a · 40 הודעות`. **אל תשתמש בהחלפת-מחרוזת
-של bash** על הנתיב — הסלאשים דורשים escaping שנשבר בשקט; `sed` בטוח.)
-
-ה-`.json` **מחוץ לאינדקס** בכוונה (`skippedPaths`), כדי שכל תוצאה לא תופיע פעמיים.
+אם `SID` ריק, לא נמצאה תוצאה; משנים את השאילתה לפני קריאת הסשן.
 
 ## לרענן עכשיו
 
@@ -147,11 +137,8 @@ jq -r '.messages[] | "\(.role): \(.content)"' "$JSON"  # השיחה כטקסט
 agent-sessions-refresh --quiet    # ~3 שניות
 ```
 
-**מתי זה נחוץ:** רק למקורות מבוססי-SQLite — **Cursor ו-opencode**. שם
-הייצוא הוא המסלול היחיד לחיפוש. רתמות שכותבות JSONL (‏Claude, ‏Codex,
-‏grok, ‏pi, ‏omp…) כבר מאונדקסות חי ואינן צריכות את זה.
-
-אחרי הרענון recoll קולט לבד תוך ~30 שניות — אין צורך לגעת בו.
+**מתי זה נחוץ:** כשהשיחה הנוכחית עוד לא מופיעה ב־`ask`, בלי קשר לפורמט
+המקור. הרענון מעדכן את ה־DB; הוא אינו מחכה לקליטה ב־Recoll.
 בלי טריגר, הטיימר רץ ממילא כל 20 דקות.
 
 ## מה יש בארכיון שאין במקור
@@ -177,7 +164,7 @@ agent-sessions-refresh --quiet    # ~3 שניות
 | יחידה | מתי |
 |---|---|
 | `agent-sessions-export.timer` | כל 20 דק׳ |
-| `nightly-search-index.timer` | 04:00 — recoll → cass → ייצוא |
+| `nightly-search-index.timer` | 04:00 — אינדקסי Recoll של הידע והיומן, ועדכון DB הסשנים |
 | `recoll-full-rebuild.timer` | 1 לחודש — `recollindex -z` |
 
 ```bash
@@ -185,5 +172,5 @@ systemctl --user list-timers | grep -E 'agent-sessions|recoll|nightly'
 journalctl --user -u agent-sessions-export.service -n 20
 ```
 
-**רנבוקים:** `agents-config/workflows/runbooks/agent-sessions-archive.md`
-ו-`cursor-store-db-format.md`.
+**רנבוקים:** `agents-config/wiki/software/basic-memory/runbooks/agent-sessions-archive.md`
+ו־`agents-config/wiki/vendors/cursor/runbooks/cursor-store-db-format.md`.
