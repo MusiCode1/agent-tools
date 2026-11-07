@@ -3,6 +3,13 @@
 # Run after every change under rules/.
 set -euo pipefail
 
+# פרופיל חדש מופעל רק בבקשה מפורשת; מסלול התאימות למטה נשאר זמין.
+for arg in "$@"; do
+  if [[ "$arg" == "--profile" ]]; then
+    exec python3 "$(dirname "$(realpath "$0")")/kb-rules" build "$@"
+  fi
+done
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MACHINE="${MACHINE:-$ROOT/memory/machines/$(hostname)}"
 RULES="$MACHINE/rules"
