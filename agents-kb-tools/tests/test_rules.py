@@ -100,6 +100,20 @@ class RulesTest(unittest.TestCase):
         rs[0]["meta"]["summary"] = "א" * 10000
         with self.assertRaises(RuleError): render(self.root, c, rs, {"machine:box"}, "session", hook=True)
 
+    def test_reference_root_reproduces_artifacts_from_isolated_snapshot(self):
+        import shutil
+        c, rs = self.loaded()
+        canonical = Path('/canonical/instance')
+        output = self.root / 'generated'
+        build(self.root, output, c, rs, {'machine:box'}, reference_root=canonical)
+        self.assertIn(str(canonical / 'rules/one.md'), (output / 'AGENTS.md').read_text())
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = Path(tmp)
+            shutil.copytree(self.root, snapshot, dirs_exist_ok=True)
+            copied_config, copied_rules = load(snapshot, snapshot / 'profile.json')
+            build(snapshot, snapshot / 'generated', copied_config, copied_rules, {'machine:box'},
+                  check=True, reference_root=canonical)
+
     def test_build_check_is_read_only_and_detects_changes(self):
         c, rs = self.loaded()
         out = self.root / "generated"

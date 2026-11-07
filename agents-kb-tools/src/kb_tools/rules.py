@@ -170,11 +170,12 @@ def atomic(path, text):
     tmp.replace(path)
 
 
-def build(root, output, config, rules, scopes, check=False):
+def build(root, output, config, rules, scopes, check=False, reference_root=None):
     output = inside(root, output)
     # מרנדרים ומאמתים הכול לפני כתיבת תוצר כלשהו.
-    session, sr = render(root, config, rules, scopes, "session")
-    review, rr = render(root, config, rules, scopes, "auto_review")
+    references = (reference_root or root).resolve()
+    session, sr = render(references, config, rules, scopes, "session")
+    review, rr = render(references, config, rules, scopes, "auto_review")
     artifacts = {"AGENTS.md": session, "auto-review.md": review,
                  "codex-auto-review.toml": "[auto_review]\nextra_policy = " + json.dumps(review, ensure_ascii=False) + "\n",
                  "claude/rules/session.md": session,
@@ -182,7 +183,7 @@ def build(root, output, config, rules, scopes, check=False):
     if any(scope.startswith("project:") for scope in scopes):
         base_scopes = {scope for scope in scopes if not scope.startswith("project:")}
         base_ids = {r["meta"]["id"] for r in select(config, rules, base_scopes, "session")}
-        delta, _ = render(root, config, [r for r in rules if r["meta"]["id"] not in base_ids], scopes, "session")
+        delta, _ = render(references, config, [r for r in rules if r["meta"]["id"] not in base_ids], scopes, "session")
         artifacts["project/AGENTS.md"] = delta
         artifacts["project/claude-rules/session.md"] = delta
         artifacts["project/cursor-rules/project-agents.mdc"] = "---\nalwaysApply: true\n---\n\n" + delta
@@ -191,9 +192,9 @@ def build(root, output, config, rules, scopes, check=False):
         by_id = {r["meta"]["id"]: r for r in rules}
         for entry in registry["rules"]:
             source = by_id[entry["id"]]
-            entry["text"] = source["meta"]["summary"] + "\nפירוט: " + str(root / source["path"])
+            entry["text"] = source["meta"]["summary"] + "\nפירוט: " + str(references / source["path"])
         artifacts["rule-triggers.json"] = json.dumps(registry, ensure_ascii=False, indent=2) + "\n"
-    manifest = {"version": 1, "scopes": sorted(scopes), "root": str(root), "engine_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), "rules": [
+    manifest = {"version": 1, "scopes": sorted(scopes), "root": str(references), "engine_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), "rules": [
         {"id": r["meta"]["id"], "source": r["path"], "sha256": r["sha256"],
          "injection": r["meta"]["injection"], "scope": r["meta"]["scope"],
          "selected": {"session": r in sr, "auto_review": r in rr}} for r in rules],
@@ -222,6 +223,7 @@ def main(argv=None):
     p.add_argument("--project", default="")
     p.add_argument("--service", action="append", default=[])
     p.add_argument("--target", choices=["session", "auto_review"], default="session")
+    p.add_argument("--reference-root", type=Path, help="Canonical consumer path; never used to read sources or write outputs")
     p.add_argument("--output", type=Path)
     p.add_argument("--check", action="store_true")
     p.add_argument("--hook", action="store_true", help="אכיפת תקרת 9000 תווים; אין חיתוך")
@@ -243,7 +245,7 @@ def main(argv=None):
         elif args.command == "build":
             if not args.output:
                 raise RuleError("build דורש --output מפורש בתוך המאגר")
-            result = build(root, root / args.output, config, rules, scopes, args.check)
+            result = build(root, root / args.output, config, rules, scopes, args.check, args.reference_root)
             print(json.dumps(result["sizes"], ensure_ascii=False))
         else:
             if not args.registry:
