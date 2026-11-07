@@ -23,6 +23,12 @@ class InstallationTest(unittest.TestCase):
         self.assertEqual(after, install.toml_values(after, {"project_doc_max_bytes": 131072,
                                                            "auto_review.extra_policy": "new\nrule"}))
 
+    def test_quoted_project_paths_with_dots_are_preserved(self):
+        key = 'projects."/tmp/project.with.dots".trust_level'
+        result = install.toml_values('[other]\nx = 1\n', {key: 'trusted'})
+        self.assertEqual(tomllib.loads(result)['projects']['/tmp/project.with.dots']['trust_level'], 'trusted')
+        self.assertEqual(result, install.toml_values(result, {key: 'trusted'}))
+
     def test_reversible_links_and_files_and_change_guard(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

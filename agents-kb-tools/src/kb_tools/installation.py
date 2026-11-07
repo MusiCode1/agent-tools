@@ -110,10 +110,19 @@ def toml_values(text, values):
     """Change only explicit string/integer keys, preserving all other config text."""
     original = tomllib.loads(text)
     lines = text.splitlines(keepends=True)
+    def key_parts(dotted):
+        node = tomllib.loads(dotted + " = 0")
+        parts = []
+        while isinstance(node, dict):
+            key, node = next(iter(node.items()))
+            parts.append(key)
+        return parts
+
     for dotted, value in values.items():
         table, _, key = dotted.rpartition(".")
+        parts = key_parts(dotted)
         current = original
-        for part in table.split(".") if table else []:
+        for part in parts[:-1]:
             current = current.get(part, {})
         if current.get(key) == value:
             continue
@@ -157,7 +166,7 @@ def toml_values(text, values):
     parsed = tomllib.loads(result)
     for dotted, value in values.items():
         node = parsed
-        for part in dotted.split("."):
+        for part in key_parts(dotted):
             node = node[part]
         if node != value:
             raise ValueError(f"TOML update failed: {dotted}")
