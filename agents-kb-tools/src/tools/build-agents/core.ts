@@ -1,6 +1,6 @@
 import { accessSync, constants, existsSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import { hostname, tmpdir } from 'node:os';
+import { hostname } from 'node:os';
 import { main as rulesMain } from '../rules/core.js';
 import { alwaysRules, options, rulesFor } from '../wiki-index/core.js';
 import { descendants, isDirectory } from '../../shared/legacy-filesystem.js';
@@ -120,7 +120,9 @@ export function main(argv: string[]): number | Promise<number> {
 }
 
 function writeAtomically(path: string, text: string) {
-  const dir = mkdtempSync(join(tmpdir(), 'kb-build-agents-'));
+  // rename is atomic only within a filesystem; keep the temporary file beside
+  // its destination rather than depending on TMPDIR's device or availability.
+  const dir = mkdtempSync(join(dirname(path), '.kb-build-agents-'));
   const temp = join(dir, 'AGENTS.md');
   try { writeFileSync(temp, text, { encoding: 'utf8', mode: 0o600 }); renameSync(temp, path); }
   finally { rmSync(dir, { recursive: true, force: true }); }

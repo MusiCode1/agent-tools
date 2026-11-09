@@ -36,6 +36,37 @@ test('export is relocatable, deterministic and check does not write',()=>{
   } finally {fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
+test('complete skill folders preserve binary bytes, helper permissions and local edits',()=>{
+  const f=fixture();
+  try {
+    const folder=path.join(f.source,'src/skills/kb-use');
+    fs.mkdirSync(path.join(folder,'scripts'));
+    fs.mkdirSync(path.join(folder,'assets'));
+    const helper=path.join(folder,'scripts/helper.sh');
+    const asset=path.join(folder,'assets/probe.bin');
+    const bytes=Buffer.from([0,255,128,10]);
+    fs.writeFileSync(helper,'#!/bin/sh\nprintf synthetic\\n\n');
+    fs.chmodSync(helper,0o755);
+    fs.writeFileSync(asset,bytes);
+    fs.appendFileSync(path.join(folder,'SKILL.md'),'Run `scripts/helper.sh`. Read [asset](assets/probe.bin).\n');
+    packageSkills(f.source,f.output);
+    const exportedHelper=path.join(f.output,'kb-use/scripts/helper.sh');
+    const exportedAsset=path.join(f.output,'kb-use/assets/probe.bin');
+    assert.equal(fs.readFileSync(exportedHelper,'utf8'),fs.readFileSync(helper,'utf8'));
+    assert.equal(fs.statSync(exportedHelper).mode & 0o777,0o755);
+    assert.deepEqual(fs.readFileSync(exportedAsset),bytes);
+    packageSkills(f.source,f.output,true);
+    packageSkills(f.source,f.output);
+    fs.chmodSync(exportedHelper,0o644);
+    assert.throws(()=>packageSkills(f.source,f.output,true),/stale/);
+    assert.throws(()=>packageSkills(f.source,f.output),/edited/);
+    fs.chmodSync(exportedHelper,0o755);
+    fs.writeFileSync(exportedAsset,Buffer.from([0,254,128,10]));
+    assert.throws(()=>packageSkills(f.source,f.output),/edited/);
+    assert.deepEqual(fs.readFileSync(exportedAsset),Buffer.from([0,254,128,10]));
+  } finally {fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
 test('broken references fail before any output and unique output edits survive',()=>{
   const f=fixture();
   try {

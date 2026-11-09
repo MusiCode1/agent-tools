@@ -31,13 +31,14 @@ export function inside(root: string, input: string): string {
   return resolved;
 }
 
-export function atomicWrite(file: string, text: string, mode = 0o600): void {
+export function atomicWrite(file: string, text: string | Uint8Array, mode = 0o600): void {
   try { if (fs.lstatSync(file).isSymbolicLink()) throw new Error(`פלט הוא symlink: ${file}`); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temporary = path.join(path.dirname(file), `.kb-${randomUUID()}`);
   try {
     fs.writeFileSync(temporary, text, { encoding: 'utf8', mode, flag: 'wx' });
+    fs.chmodSync(temporary, mode);
     fs.renameSync(temporary, file);
   } finally { fs.rmSync(temporary, { force: true }); }
 }

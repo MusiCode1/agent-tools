@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { hostname, tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -217,6 +217,26 @@ test('build-agents errors preserve previous output for missing and empty rules',
     result = f.cli('build-agents', [], { MACHINE: machine, KB_ENTRYPOINT: entry });
     assert.equal(result.status, 1); assert.equal(result.stderr, "cat: '': No such file or directory\n");
     assert.equal(readFileSync(previous, 'utf8'), 'previous');
+  } finally { f.clean(); }
+});
+
+test('build-agents replaces output atomically without using an unavailable TMPDIR', () => {
+  const f = fixture();
+  try {
+    const entry = f.put('tools/bin/kb-build-agents', '# fixture\n');
+    const sibling = f.put('tools/bin/kb-wiki-index', '# fixture\n'); chmodSync(sibling, 0o755);
+    f.put('machine/rules/1.md', '# Synthetic replacement\n');
+    const output = f.put('machine/AGENTS.md', 'previous output\n');
+    const unavailableTmpdir = f.put('unavailable-tmpdir', 'a file cannot contain temporary files');
+    const result = f.cli('build-agents', [], {
+      MACHINE: join(f.root, 'machine'), KB_ENTRYPOINT: entry, TMPDIR: unavailableTmpdir, TSX_DISABLE_CACHE: '1',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(readFileSync(output, 'utf8'), /# Synthetic replacement\n$/);
+    assert.doesNotMatch(readFileSync(output, 'utf8'), /previous output/);
+    assert.equal(statSync(output).mode & 0o777, 0o600);
+    assert.deepEqual(readdirSync(join(f.root, 'machine')).sort(), ['AGENTS.md', 'rules']);
+    assert.equal(readFileSync(unavailableTmpdir, 'utf8'), 'a file cannot contain temporary files');
   } finally { f.clean(); }
 });
 

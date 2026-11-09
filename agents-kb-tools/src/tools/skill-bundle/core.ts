@@ -9,16 +9,31 @@ const hash = (value: string | Buffer) => createHash('sha256').update(value).dige
 const json = (value: unknown) => JSON.stringify(value, null, 2) + '\n';
 const within = (root: string, file: string) => {const rel = path.relative(root, file); return rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);};
 
-interface Manifest {version: number; files: Record<string,string>;}
+interface Manifest {version: number; files: Record<string,string>; modes?: Record<string,number>;}
+interface Resource {data: Buffer; mode: number;}
+const generated = (value: unknown): Resource => ({data: Buffer.from(json(value)), mode: 0o644});
 
-/** Export only explicit skill resources; no instance data or runtime installation. */
-export function renderBundles(source: string): Map<string,string> {
+function skillFiles(folder: string): string[] {
+  const files: string[] = [];
+  for (const item of fs.readdirSync(folder, {withFileTypes: true})) {
+    const file = path.join(folder, item.name);
+    if (item.isDirectory()) files.push(...skillFiles(file));
+    else if (item.isFile()) files.push(file);
+    else throw new Error(`Unsupported skill resource (files and directories only): ${file}`);
+  }
+  return files.sort(compareCodePoints);
+}
+
+/** Copy complete skill folders and referenced method resources; no runtime installation. */
+export function renderBundles(source: string): Map<string,Resource> {
   source = fs.realpathSync(source);
   const method = path.join(source, 'src/method');
-  const result = new Map<string,string>();
+  const result = new Map<string,Resource>();
   for (const skill of skills) {
     const folder = path.join(source, 'src/skills', skill);
-    const queue = [path.join(folder, 'SKILL.md')];
+    if (fs.lstatSync(folder).isSymbolicLink()) throw new Error(`Skill source must not be a symlink: ${folder}`);
+    const queue = skillFiles(folder);
+    if (!queue.includes(path.join(folder,'SKILL.md'))) throw new Error(`Missing SKILL.md: ${folder}`);
     const seen = new Map<string,string>();
     const sourceFor = new Map<string,string>();
     const destination = (file: string): string => {
@@ -38,9 +53,9 @@ export function renderBundles(source: string): Map<string,string> {
       if (seen.has(file)) continue;
       const local = destination(file);
       seen.set(file, local);
-      let body = fs.readFileSync(file, 'utf8');
+      let data = fs.readFileSync(file);
       if (path.extname(file) === '.md') {
-        body = body.replace(/(\[[^\]]*\]\()(<[^>]+>|[^\s)]+)(\))/g, (match, start: string, link: string, end: string) => {
+        const body = data.toString('utf8').replace(/(\[[^\]]*\]\()(<[^>]+>|[^\s)]+)(\))/g, (match, start: string, link: string, end: string) => {
           const raw = link.startsWith('<') ? link.slice(1,-1) : link;
           if (/^(?:[a-z][a-z0-9+.-]*:|#)/i.test(raw)) return match;
           const split = raw.indexOf('#');
@@ -53,14 +68,17 @@ export function renderBundles(source: string): Map<string,string> {
           const value = relative + fragment;
           return start + (/\s/.test(value) ? `<${value}>` : value) + end;
         });
+        data = Buffer.from(body);
       }
-      result.set(`${skill}/${local}`, body);
+      result.set(`${skill}/${local}`, {data,mode: fs.statSync(file).mode & 0o777});
     }
     const entries = [...seen].sort((a,b)=>compareCodePoints(a[1],b[1])).map(([file, output]) => ({
       source: path.relative(source,file).split(path.sep).join('/'), output,
-      source_sha256: hash(fs.readFileSync(file)), output_sha256: hash(result.get(`${skill}/${output}`)!),
+      source_sha256: hash(fs.readFileSync(file)), output_sha256: hash(result.get(`${skill}/${output}`)!.data),
+      mode: result.get(`${skill}/${output}`)!.mode,
     }));
-    result.set(`${skill}/manifest.json`, json({version: 1, skill, sources: entries}));
+    if (result.has(`${skill}/manifest.json`)) throw new Error(`Reserved skill resource: ${skill}/manifest.json`);
+    result.set(`${skill}/manifest.json`, generated({version: 1, skill, sources: entries}));
   }
   return new Map([...result].sort((a,b)=>compareCodePoints(a[0],b[0])));
 }
@@ -72,8 +90,12 @@ export function packageSkills(source: string, output: string, check = false): Ma
     throw new Error('Export output must not replace product sources; use dist/skills or a separate directory');
   }
   const rendered = renderBundles(source);
-  const manifest: Manifest = {version: 1, files: Object.fromEntries([...rendered].map(([name,body])=>[name,hash(body)]))};
-  rendered.set('skills-manifest.json', json(manifest));
+  const manifest: Manifest = {
+    version: 1,
+    files: Object.fromEntries([...rendered].map(([name,resource])=>[name,hash(resource.data)])),
+    modes: Object.fromEntries([...rendered].map(([name,resource])=>[name,resource.mode])),
+  };
+  rendered.set('skills-manifest.json', generated(manifest));
   const marker = path.join(output, 'skills-manifest.json');
   let previous: Manifest = {version: 1, files: {}};
   if (fs.existsSync(output)) {
@@ -92,7 +114,8 @@ export function packageSkills(source: string, output: string, check = false): Ma
       if (name === 'skills-manifest.json') continue;
       const known = previous.files[name];
       if (!known) throw new Error(`Unowned file in skill output: ${name}`);
-      if (hash(fs.readFileSync(file)) !== known && !check) throw new Error(`Exported resource was edited: ${name}; choose a new output directory`);
+      const modeChanged = previous.modes?.[name] !== undefined && (fs.statSync(file).mode & 0o777) !== previous.modes[name];
+      if ((hash(fs.readFileSync(file)) !== known || modeChanged) && !check) throw new Error(`Exported resource was edited: ${name}; choose a new output directory`);
     }
   }
   for (const name of rendered.keys()) {
@@ -101,15 +124,16 @@ export function packageSkills(source: string, output: string, check = false): Ma
     catch(error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   }
   if (check) {
-    for (const [name,body] of rendered) {
+    for (const [name,resource] of rendered) {
       const file = path.join(output,name);
-      if (!fs.existsSync(file) || fs.readFileSync(file,'utf8') !== body) throw new Error(`Missing/stale skill resource: ${name}`);
+      if (!fs.existsSync(file) || !fs.readFileSync(file).equals(resource.data) || (fs.statSync(file).mode & 0o777) !== resource.mode) throw new Error(`Missing/stale skill resource: ${name}`);
     }
     for (const name of Object.keys(previous.files)) if (!manifest.files[name]) throw new Error(`Obsolete skill resource: ${name}`);
   } else {
     for (const name of Object.keys(previous.files)) if (!manifest.files[name]) fs.unlinkSync(inside(output,path.join(output,name)));
-    for (const [name,body] of rendered) if (name !== 'skills-manifest.json') atomicWrite(path.join(output,name),body);
-    atomicWrite(marker,rendered.get('skills-manifest.json')!);
+    for (const [name,resource] of rendered) if (name !== 'skills-manifest.json') atomicWrite(path.join(output,name),resource.data,resource.mode);
+    const markerResource = rendered.get('skills-manifest.json')!;
+    atomicWrite(marker,markerResource.data,markerResource.mode);
   }
   return manifest;
 }
