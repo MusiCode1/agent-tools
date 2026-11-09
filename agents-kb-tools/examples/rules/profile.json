@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "sources": [
+    "rules"
+  ],
+  "context": {
+    "machine": "demo-machine"
+  },
+  "machine_aliases": {
+    "old-demo": "demo-machine"
+  },
+  "budgets": {
+    "session": {
+      "chars": 24000,
+      "bytes": 30000
+    },
+    "auto_review": {
+      "chars": 18000,
+      "bytes": 24000
+    }
+  }
+}

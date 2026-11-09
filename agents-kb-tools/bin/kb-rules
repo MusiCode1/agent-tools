@@ -1,6 +1,11 @@
-#!/usr/bin/env python3
-from pathlib import Path
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from kb_tools.rules import main
-raise SystemExit(main())
+#!/bin/sh
+# Compatibility entrypoint; tool implementation is built from TypeScript.
+KB_ENTRYPOINT="$0"
+export KB_ENTRYPOINT
+kb_component_root="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0")")/.." && pwd)" || exit 1
+kb_entry="$kb_component_root/dist/tools/rules/cli.js"
+if [ ! -f "$kb_entry" ]; then
+  echo 'kb-rules: missing JavaScript build; run npm ci and npm run build in agents-kb-tools.' >&2
+  exit 1
+fi
+exec node "$kb_entry" "$@"

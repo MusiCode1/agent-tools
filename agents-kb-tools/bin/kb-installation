@@ -1,0 +1,11 @@
+#!/bin/sh
+# Compatibility entrypoint; tool implementation is built from TypeScript.
+KB_ENTRYPOINT="$0"
+export KB_ENTRYPOINT
+kb_component_root="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0")")/.." && pwd)" || exit 1
+kb_entry="$kb_component_root/dist/tools/installation/cli.js"
+if [ ! -f "$kb_entry" ]; then
+  echo 'kb-installation: missing JavaScript build; run npm ci and npm run build in agents-kb-tools.' >&2
+  exit 1
+fi
+exec node "$kb_entry" "$@"

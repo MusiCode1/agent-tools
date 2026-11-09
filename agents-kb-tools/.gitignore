@@ -1,4 +1,8 @@
-# קונפיג חי — הכלים קוראים knowledge.conf (או $KB_ROOT). הדוגמה: knowledge.conf.example
+# Instance-local configuration stays outside version control.
 knowledge.conf
+!examples/legacy/knowledge.conf
 kb.conf
 __pycache__/
+node_modules/
+dist/
+*.tgz

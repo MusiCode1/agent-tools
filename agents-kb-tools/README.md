@@ -1,33 +1,57 @@
 # agents-kb-tools
 
-כלים משותפים למופעי ידע: בחירת כללים לפי תחולה, תמציות לשני יעדי הזרקה,
-אינדקסים ובדיקות חוזה. התוכן, הפרופילים וההרשאות נשארים בריפו של כל מופע.
+כלי ניהול ידע והפצת סקילים משותפים למופעים שונים. כלי המוצר ב־TypeScript;
+הנתיבים, התוכן, תחולת הכללים וההרשאות נשארים אצל המופע. ask הוא רכיב נפרד ונשאר Python.
 
 ```text
-src/kb_tools/       מנוע בחירה ויצירת תמציות
-src/method/         חוזי המוצר ושיטת ניהול הידע
-src/skills/kb-use/  סקיל שימוש
-src/skills/kb-install/ סקיל התקנה וחיבור
-bin/               נקודות כניסה וכלי תאימות
-tests/            בדיקות מבודדות
-docs/             תיעוד הפרויקט, החלטות ויומן פיתוח
+src/tools/<tool>/   מימוש ומשאבים של כלי אחד
+src/shared/         קוד משותף לפי שימוש בפועל
+src/method/         השיטה וחוזי המוצר
+src/skills/         מקורות kb-use ו־kb-install
+bin/                נקודות כניסה תאימות
+tests/              בדיקות כלים ושילוב על נתונים סינתטיים
+examples/           דוגמאות לחוזה החדש ולתאימות
+docs/               ארכיטקטורה, החלטות ויומן פיתוח
+dist/               JavaScript וחבילות סקילים מופקים, מחוץ ל־Git
 ```
 
-[חוזה הכללים](src/method/rule-contract.md) הוא מקור האמת לפרופיל התמציות.
-[שיטת הידע](src/method/knowledge-method.md) מסבירה כתיבה ושליפה.
-להתקנה קרא את [kb-install](src/skills/kb-install/SKILL.md).
-Python 3.11 ו־PyYAML 6 נדרשים; build אינו מתקין תלויות.
+Node.js 22 ומעלה נדרש. הכנה מתוך תיקיית הרכיב:
 
-```bash
-python3 bin/kb-rules validate --root /path/to/instance --profile config/rules.json
-python3 bin/kb-build-agents --root /path/to/instance --profile config/rules.json --output generated/rules
-python3 -m unittest discover -s tests -v
+```sh
+npm ci
+npm run check
+npm run build
+npm test
 ```
 
-התוצרים מיועדים לסקירה: AGENTS.md, auto-review.md, מקטע תצורת Codex,
-קובצי טעינה טבעית ל־Claude ול־Cursor, ומרשם מקורות ובחירה. אין חיבור חי אוטומטי.
-[פרטי ההרצה](docs/rule-injection.md).
+הפקודות נבנות מראש ומסרבות לתוצר חסר או מיושן. הפקה אינה משנה הגדרות משתמש,
+PATH, קישורי סקילים, hooks או פרופיל חי. להפצה מריצים `npm pack`; החבילה כוללת
+JavaScript ותלויות מאוגדות, מקורות לאימות חתימות ושתי חבילות סקילים ניידות.
 
-כלי knowledge.conf הוותיקים ממשיכים במסלולם הקודם. הוספת --profile ל־kb-build-agents
-בוחרת במפורש במנוע החדש ודורשת root ו־output. ללא הדגל, התנהגות התאימות נשמרת.
-[ארכיטקטורת הפרויקט](docs/architecture.md) · [החלטות](docs/decisions.md) · [יומן](docs/walkthrough.md).
+| פקודה | שימוש |
+|---|---|
+| kb-rules | validate, render, build, list ו־trigger-registry לפי פרופיל |
+| kb-build-agents | build בפרופיל מפורש; ללא --profile נשמר מסלול התאימות |
+| kb-hygiene | שערי תוכן של knowledge.conf |
+| kb-wiki-index | אינדקס ישויות ובחירת כללים במסלול התאימות |
+| kb-workflows-index | אינדקס נהלים מתוך frontmatter |
+| kb-md-fields | חילוץ שדות Markdown ל־Recoll |
+| kb-installation | JSON לתכנון, בדיקה, החלה ושחזור התקנה מפורשת |
+| kb-package-skills | ייצוא סקילים עם הפניות וקובצי עזר |
+
+```sh
+bin/kb-rules validate --root /path/to/instance --profile config/rules.json
+bin/kb-rules build --root /path/to/instance --profile config/rules.json --output generated/rules
+bin/kb-package-skills --source /path/to/agents-kb-tools --output /path/to/export
+```
+
+[שיטת הידע](src/method/knowledge-method.md) · [חוזה הכללים](src/method/rule-contract.md) ·
+[הפעלת הכלים](src/method/rule-injection.md) · [התקנה וחיבור](src/method/installation.md).
+סקילים: [kb-use](src/skills/kb-use/SKILL.md) ו־[kb-install](src/skills/kb-install/SKILL.md).
+דוגמאות: [פרופיל](examples/rules/profile.json) ו־[תאימות](examples/legacy/knowledge.conf).
+
+כלי knowledge.conf בוחרים מופע ב־KB_ROOT או בחיפוש מה־cwd כלפי מעלה.
+kb-build-agents שומר גם את MACHINE והקשר נקודת הכניסה. kb-rules דורש
+--root מפורש ואינו גוזר אותו ממשתני הסביבה האלה.
+
+[ארכיטקטורה](docs/architecture.md) · [החלטות](docs/decisions.md) · [יומן](docs/walkthrough.md).

@@ -1,0 +1,45 @@
+{
+  "name": "agents-kb-tools",
+  "version": "0.2.0",
+  "description": "Scoped knowledge tools, portable agent skills and reversible installation",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsx src/build.ts",
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test tests/tools/*.test.ts tests/integration/*.test.ts",
+    "prepack": "npm run build"
+  },
+  "bin": {
+    "kb-rules": "bin/kb-rules",
+    "kb-hygiene": "bin/kb-hygiene",
+    "kb-wiki-index": "bin/kb-wiki-index",
+    "kb-workflows-index": "bin/kb-workflows-index",
+    "kb-build-agents": "bin/kb-build-agents",
+    "kb-md-fields": "bin/kb-md-fields",
+    "kb-installation": "bin/kb-installation",
+    "kb-package-skills": "bin/kb-package-skills"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "src",
+    "tsconfig.json",
+    "README.md",
+    "AGENTS.md",
+    "examples",
+    "docs"
+  ],
+  "dependencies": {
+    "yaml": "2.9.1",
+    "smol-toml": "1.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "esbuild": "0.28.2",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2"
+  }
+}
