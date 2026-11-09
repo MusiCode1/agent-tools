@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {atomicWrite, inside} from '../../shared/fs.js';
+import {atomicWrite, inside, resolveExistingParents} from '../../shared/fs.js';
 import {compareCodePoints} from '../../shared/text.js';
 
 const skills = ['kb-use', 'kb-install'];
@@ -25,7 +25,7 @@ function skillFiles(folder: string): string[] {
 }
 
 /** Copy complete skill folders and referenced method resources; no runtime installation. */
-export function renderBundles(source: string): Map<string,Resource> {
+export function renderBundles(source: string, npmModes = false): Map<string,Resource> {
   source = fs.realpathSync(source);
   const method = path.join(source, 'src/method');
   const result = new Map<string,Resource>();
@@ -70,7 +70,8 @@ export function renderBundles(source: string): Map<string,Resource> {
         });
         data = Buffer.from(body);
       }
-      result.set(`${skill}/${local}`, {data,mode: fs.statSync(file).mode & 0o777});
+      const mode = fs.statSync(file).mode & 0o777;
+      result.set(`${skill}/${local}`, {data,mode: npmModes ? (mode & 0o111 ? 0o755 : 0o644) : mode});
     }
     const entries = [...seen].sort((a,b)=>compareCodePoints(a[1],b[1])).map(([file, output]) => ({
       source: path.relative(source,file).split(path.sep).join('/'), output,
@@ -89,7 +90,11 @@ export function packageSkills(source: string, output: string, check = false): Ma
   if (within(output, source) || (within(source, output) && !within(path.join(source,'dist'), output))) {
     throw new Error('Export output must not replace product sources; use dist/skills or a separate directory');
   }
-  const rendered = renderBundles(source);
+  // Canonical 0644/0755 distribution modes survive npm packing/extraction.
+  // Only the built-in distribution needs matching manifests before packing;
+  // separate exports retain exact source modes, including private 0600 files.
+  const npmModes = resolveExistingParents(output) === resolveExistingParents(path.join(source,'dist/skills'));
+  const rendered = renderBundles(source,npmModes);
   const manifest: Manifest = {
     version: 1,
     files: Object.fromEntries([...rendered].map(([name,resource])=>[name,hash(resource.data)])),

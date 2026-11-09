@@ -80,3 +80,41 @@ test('portable skill export and every legacy wrapper work against synthetic exam
     assert.equal(result.status,0,result.stderr); assert.ok(fs.existsSync(path.join(machine,'AGENTS.md')));
   } finally {f.cleanup();}
 });
+
+test('npm pack preserves verifiable built-in skill bundles after normalizing source permissions',()=>{
+  const f=fixture();
+  try {
+    const copied=path.join(f.root,'source');
+    fs.mkdirSync(copied);
+    for(const name of ['bin','src','package.json','package-lock.json','tsconfig.json','examples','docs','README.md','AGENTS.md']) {
+      fs.cpSync(path.join(product,name),path.join(copied,name),{recursive:true});
+    }
+    const sourceSkill=path.join(copied,'src/skills/kb-use/SKILL.md');
+    const sourceMethod=path.join(copied,'src/method/knowledge-method.md');
+    const sourceHelper=path.join(copied,'src/skills/kb-use/scripts/mode-probe.sh');
+    fs.chmodSync(sourceSkill,0o664);
+    fs.chmodSync(sourceMethod,0o664);
+    fs.mkdirSync(path.dirname(sourceHelper),{recursive:true});
+    fs.writeFileSync(sourceHelper,'#!/bin/sh\ntrue\n'); fs.chmodSync(sourceHelper,0o770);
+    fs.symlinkSync(fs.realpathSync(path.join(product,'node_modules')),path.join(copied,'node_modules'));
+    const env={npm_config_cache:process.env.npm_config_cache ?? process.env.NPM_CONFIG_CACHE ?? path.join(f.root,'npm-cache')};
+    let result=run('npm',['run','build'],copied,env);
+    assert.equal(result.status,0,result.stderr);
+    assert.equal(fs.statSync(sourceSkill).mode & 0o777,0o664);
+    assert.equal(fs.statSync(sourceMethod).mode & 0o777,0o664);
+    assert.equal(fs.statSync(sourceHelper).mode & 0o777,0o770);
+    result=run('npm',['pack','--ignore-scripts','--json','--pack-destination',f.root],copied,env);
+    assert.equal(result.status,0,result.stderr);
+    const tarball=path.join(f.root,JSON.parse(result.stdout)[0].filename);
+    const extracted=path.join(f.root,'extracted'); fs.mkdirSync(extracted);
+    result=run('tar',['-xzf',tarball,'-C',extracted]); assert.equal(result.status,0,result.stderr);
+    const installed=path.join(extracted,'package');
+    assert.equal(fs.statSync(path.join(installed,'src/skills/kb-use/SKILL.md')).mode & 0o777,0o644);
+    assert.equal(fs.statSync(path.join(installed,'src/method/knowledge-method.md')).mode & 0o777,0o644);
+    assert.ok(fs.statSync(path.join(installed,'src/skills/kb-use/scripts/mode-probe.sh')).mode & 0o111);
+    assert.equal(fs.statSync(path.join(installed,'dist/skills/kb-use/scripts/mode-probe.sh')).mode & 0o777,0o755);
+    assert.equal(fs.existsSync(path.join(installed,'node_modules')),false);
+    result=run(path.join(installed,'bin/kb-package-skills'),['--source',installed,'--output',path.join(installed,'dist/skills'),'--check']);
+    assert.equal(result.status,0,result.stderr);
+  } finally {f.cleanup();}
+});

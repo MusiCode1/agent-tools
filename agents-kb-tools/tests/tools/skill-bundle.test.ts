@@ -67,6 +67,43 @@ test('complete skill folders preserve binary bytes, helper permissions and local
   } finally {fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
+test('only built-in bundles use npm file modes; external private exports retain their modes',()=>{
+  const f=fixture();
+  try {
+    const skill=path.join(f.source,'src/skills/kb-use/SKILL.md');
+    const method=path.join(f.source,'src/method/method.md');
+    const helper=path.join(f.source,'src/skills/kb-use/helper.sh');
+    fs.chmodSync(skill,0o664);
+    fs.chmodSync(method,0o600);
+    fs.writeFileSync(helper,'#!/bin/sh\ntrue\n');
+    fs.chmodSync(helper,0o770);
+    const builtIn=path.join(f.source,'dist/skills');
+    const manifest=packageSkills(f.source,builtIn);
+    assert.equal(fs.statSync(path.join(builtIn,'kb-use/SKILL.md')).mode & 0o777,0o644);
+    assert.equal(fs.statSync(path.join(builtIn,'kb-use/references/method.md')).mode & 0o777,0o644);
+    assert.equal(fs.statSync(path.join(builtIn,'kb-use/helper.sh')).mode & 0o777,0o755);
+    assert.equal(manifest.modes!['kb-use/references/method.md'],0o644);
+    const skillManifest=JSON.parse(fs.readFileSync(path.join(builtIn,'kb-use/manifest.json'),'utf8'));
+    assert.equal(skillManifest.sources.find((item: {output: string})=>item.output==='references/method.md').mode,0o644);
+    packageSkills(f.source,builtIn,true);
+    const alias=path.join(f.root,'product-alias'); fs.symlinkSync(f.source,alias);
+    packageSkills(alias,path.join(alias,'dist/skills'),true);
+    packageSkills(f.source,f.output);
+    const privateFile=path.join(f.output,'kb-use/references/method.md');
+    assert.equal(fs.statSync(privateFile).mode & 0o777,0o600);
+    assert.equal(fs.statSync(path.join(f.output,'kb-use/SKILL.md')).mode & 0o777,0o664);
+    assert.equal(fs.statSync(path.join(f.output,'kb-use/helper.sh')).mode & 0o777,0o770);
+    assert.equal(fs.statSync(path.join(f.output,'kb-use/manifest.json')).mode & 0o777,0o644);
+    assert.equal(fs.statSync(path.join(f.output,'skills-manifest.json')).mode & 0o777,0o644);
+    assert.equal(fs.statSync(skill).mode & 0o777,0o664);
+    assert.equal(fs.statSync(method).mode & 0o777,0o600);
+    assert.equal(fs.statSync(helper).mode & 0o777,0o770);
+    packageSkills(f.source,f.output,true);
+    fs.chmodSync(privateFile,0o644);
+    assert.throws(()=>packageSkills(f.source,f.output),/edited/);
+  } finally {fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
 test('broken references fail before any output and unique output edits survive',()=>{
   const f=fixture();
   try {
