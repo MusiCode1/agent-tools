@@ -75,6 +75,16 @@ class SessionLookupTest(unittest.TestCase):
         self.assertEqual([hit['project'] for hit in sessions['hits']],
                          ['foreign-project','fixture-project'])
 
+    def test_search_term_with_hyphen_and_path(self):
+        with sqlite3.connect(self.home / 'sessions.db') as con:
+            con.execute('insert into messages values (?,?,?,?,?,?)',
+                        (self.target,'user','test-model',3,'run agents-kb-tools from portal/scripts',2))
+            con.execute("insert into messages_fts(messages_fts) values('rebuild')")
+        for term in ('agents-kb-tools', 'portal/scripts'):
+            result = self.ask(term,'--sessions','--json')
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(json.loads(result.stdout)['results'][0]['total'],1)
+
 
 if __name__ == '__main__':
     unittest.main()

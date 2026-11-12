@@ -102,12 +102,25 @@ def search_recoll(confdir, term, limit, ctx, label, stem=False):
     return {"source": label, "total": total, "hits": hits, "scanned": scanned}
 
 
+def fts_query(term):
+    """מונח → שאילתת FTS5. מילה עם מקף, נקודה, נתיב או נקודתיים נעטפת במרכאות.
+
+    בלי זה `agents-kb-tools` נקרא כביטוי עם אופרטור ו-`gui-portal` כעמודה,
+    וה-DB זורק `no such column`. מחרוזת שכבר מכילה מרכאות עוברת כמו שהיא —
+    המשתמש בחר בה תחביר FTS במפורש.
+    """
+    if '"' in term:
+        return term
+    return " ".join(tok if re.fullmatch(r"\w+", tok) else '"' + tok + '"'
+                    for tok in term.split())
+
+
 def search_sessions(term, limit, ctx, filters, whole_word):
     db = sessions_db()
     if not os.path.exists(db):
         return {"source": "sessions", "total": 0, "hits": [], "error": f"אין DB ב-{db}"}
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    where, params = ["messages_fts match ?"], [term]
+    where, params = ["messages_fts match ?"], [fts_query(term)]
     for col, key in (("m.role", "role"), ("s.cli", "cli")):
         if filters.get(key):
             where.append(f"{col} = ?"); params.append(filters[key])
