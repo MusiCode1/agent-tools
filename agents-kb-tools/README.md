@@ -51,6 +51,9 @@ bin/kb-package-skills --source /path/to/agents-kb-tools --output /path/to/export
 דוגמאות: [פרופיל](examples/rules/profile.json) ו־[תאימות](examples/legacy/knowledge.conf).
 
 כלי knowledge.conf בוחרים מופע ב־KB_ROOT או בחיפוש מה־cwd כלפי מעלה.
+kb-hygiene מקבל `--only <נתיב> …` כדי לדווח רק על ממצאים שנוגעים לקבצים
+או לתיקיות שנמסרו (יחסית לשורש המופע או ל־cwd); הסריקה נשארת מלאה. השערים
+התלויים במופע מתועדים, כבויים, בקובץ התאימות לדוגמה.
 kb-build-agents שומר גם את MACHINE והקשר נקודת הכניסה. kb-rules דורש
 --root מפורש ואינו גוזר אותו ממשתני הסביבה האלה.
 

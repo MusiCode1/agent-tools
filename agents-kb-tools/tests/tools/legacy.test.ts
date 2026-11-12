@@ -66,7 +66,7 @@ test('hygiene keeps exclusions, page dates, byte limits, duplicates, history and
     f.put('wiki/dated.md', '---\ntitle: date\naudience: [agents]\n---\n# Dated\n⟨2026-01-01⟩\n### one\ncontents\n');
     f.put('wiki/a/duplicate.md', '# Duplicate\n### missing\nblocked\n');
     f.put('wiki/b/duplicate.md', '# Duplicate\n⟨2026-01-01⟩\n### See also\nlinks\n');
-    f.put('wiki/catalog.md', `kind: catalog\n⟨2026-01-01⟩\n${'א'.repeat(100)}\n`);
+    f.put('wiki/catalog.md', `---\nkind: catalog\n---\n⟨2026-01-01⟩\n${'א'.repeat(100)}\n`);
     f.put('history/README.md', 'layer');
     f.put('history/day.md', 'entry');
     f.put('workflows/a.md', 'blocked');
