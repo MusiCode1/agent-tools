@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { findRoot, readConf } from '../../shared/instance.js';
-import { isDirectory, markdownFiles, pythonPath } from '../../shared/legacy-filesystem.js';
+import { entityWorkflowDirNames, isDirectory, isEntityWorkflow, markdownFiles, pythonPath } from '../../shared/legacy-filesystem.js';
 import { charLength } from '../../shared/text.js';
 
 /** A finding names the files it concerns, so `--only` can scope reporting without parsing messages. */
@@ -14,6 +14,8 @@ export function check(root: string, c: Record<string, string>, only: string[] = 
   const history = pythonPath(root, c.KB_HISTORY ?? 'history');
   const workflows = pythonPath(root, c.KB_WORKFLOWS ?? 'workflows');
   const rulesDir = c.KB_RULES_DIRNAME ?? 'rules';
+  // Workflows kept next to their entity are checked as workflows, not as entity pages.
+  const entityWorkflowDirs = entityWorkflowDirNames(c.KB_ENTITY_WORKFLOW_DIRS);
   const pageMax = integer(c.KB_PAGE_MAX ?? '12288');
   const segmentMax = integer(c.KB_SEGMENT_MAX ?? '4096');
   const segmentFences = integer(c.KB_SEGMENT_FENCES ?? '4');
@@ -33,7 +35,7 @@ export function check(root: string, c: Record<string, string>, only: string[] = 
   for (const file of markdownFiles(wiki)) {
     const rel = relative(root, file);
     const body = read(file);
-    if (basename(dirname(file)) === rulesDir || basename(file) === 'README.md') continue;
+    if (basename(dirname(file)) === rulesDir || basename(file) === 'README.md' || isEntityWorkflow(file, entityWorkflowDirs)) continue;
     const stem = basename(file, '.md');
     if (!titles.has(stem)) titles.set(stem, []);
     titles.get(stem)!.push(rel);

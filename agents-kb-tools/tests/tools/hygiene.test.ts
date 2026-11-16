@@ -188,3 +188,20 @@ test('--only narrows reporting but keeps the full scan', () => {
     assert.equal(findings(emptyScope.stderr).length, 2, emptyScope.stderr);
   } finally { f.clean(); }
 });
+
+test('workflows next to their entity are not checked as entity pages', () => {
+  const runbook = '---\nkind: runbook\ndescription: d\n---\n# Run\n### Step one\nno date here\n### Step two\nnor here\n';
+  const off = fixture('KB_CAPS=entity:12288,runbook:0\nKB_REQUIRE_KIND=on\n');
+  try {
+    off.put('wiki/services/alpha/runbooks/run.md', runbook);
+    const result = off.run();
+    assert.match(result.stderr, /run\.md § Step one — מקטע בלי ⟨תאריך⟩/);
+  } finally { off.clean(); }
+  const on = fixture('KB_CAPS=entity:12288,runbook:0\nKB_REQUIRE_KIND=on\nKB_ENTITY_WORKFLOW_DIRS=runbooks,diagnostics,flows\nKB_DESC_MAX=5\n');
+  try {
+    on.put('wiki/services/alpha/runbooks/run.md', runbook.replace('description: d', 'description: much too long'));
+    const result = on.run();
+    assert.doesNotMatch(result.stderr, /מקטע בלי ⟨תאריך⟩/);
+    assert.match(result.stderr, /run\.md — `description` 13 תווים > 5/);
+  } finally { on.clean(); }
+});

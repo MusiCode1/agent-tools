@@ -62,3 +62,22 @@ test('entity index groups workflows by entity, links entity pages, and keeps --j
     for (const item of JSON.parse(json.stdout)) assert.deepEqual(Object.keys(item), ['name', 'description', 'kind', 'tags', 'path']);
   } finally { f.clean(); }
 });
+
+test('workflows next to their entity join both indexes when KB_ENTITY_WORKFLOW_DIRS is set', () => {
+  const f = fixture('KB_ENTITY_WORKFLOWS_OUT=workflows/BY-ENTITY.md\nKB_ENTITY_WORKFLOW_DIRS=runbooks,flows\n');
+  try {
+    f.put('wiki/services/alpha/alpha.md', '---\nkind: entity\n---\n# alpha\n');
+    f.put('wiki/services/alpha/runbooks/near.md', workflow('Near', '[alpha]'));
+    f.put('wiki/services/alpha/notes/not-a-workflow.md', '---\nname: Notes\n---\n');
+    f.put('workflows/runbooks/far.md', workflow('Far', '[alpha]'));
+    const result = f.run();
+    assert.equal(result.status, 0, result.stderr);
+    const index = readFileSync(join(f.root, 'workflows/INDEX.md'), 'utf8');
+    assert.match(index, /## Near[\s\S]*- path: `\.\.\/wiki\/services\/alpha\/runbooks\/near\.md`/);
+    assert.match(index, /## Far/);
+    assert.doesNotMatch(index, /Notes/);
+    const byEntity = readFileSync(join(f.root, 'workflows/BY-ENTITY.md'), 'utf8');
+    assert.match(byEntity, /- \[Near\]\(<\.\.\/wiki\/services\/alpha\/runbooks\/near\.md>\)/);
+    assert.match(byEntity, /- \[Far\]\(<runbooks\/far\.md>\)/);
+  } finally { f.clean(); }
+});

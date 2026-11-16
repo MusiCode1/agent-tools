@@ -3,7 +3,7 @@ import { basename, dirname, extname, relative } from 'node:path';
 import { findRoot, readConf } from '../../shared/instance.js';
 import { parseYaml, scalarSource } from '../../shared/yaml.js';
 import { compareCodePoints } from '../../shared/text.js';
-import { comparePaths, isDirectory, markdownFiles, pythonPath } from '../../shared/legacy-filesystem.js';
+import { comparePaths, entityWorkflowDirNames, isDirectory, isEntityWorkflow, markdownFiles, pythonPath } from '../../shared/legacy-filesystem.js';
 
 export interface Workflow { name: unknown; description: string; kind: unknown; tags: unknown; path: string }
 const sources = new WeakMap<object, Record<string, string>>();
@@ -82,7 +82,12 @@ export function collect(root: string, conf: Record<string, string>): Workflow[] 
   if (!isDirectory(dir)) return [];
   const kinds = (conf.KB_KINDS ?? 'runbook,diagnostic,redirect').split(',').map(x => x.trim()).filter(Boolean).sort(compareCodePoints);
   const items: Workflow[] = [];
-  for (const md of markdownFiles(dir).sort(comparePaths)) {
+  // Workflows kept next to their entity (KB_ENTITY_WORKFLOW_DIRS) join the same
+  // index; their paths are relative to the workflows directory (`../wiki/...`).
+  const entityDirs = entityWorkflowDirNames(conf.KB_ENTITY_WORKFLOW_DIRS);
+  const wiki = pythonPath(root, conf.KB_WIKI ?? 'wiki');
+  const nearEntity = entityDirs.length && isDirectory(wiki) ? markdownFiles(wiki).filter(file => isEntityWorkflow(file, entityDirs)) : [];
+  for (const md of [...markdownFiles(dir), ...nearEntity].sort(comparePaths)) {
     if (basename(md) === indexFilename || md === entityOut) continue;
     const fm = readFrontmatter(md);
     if (!fm) { console.error(`list-workflows: skipping ${md} (no valid frontmatter)`); continue; }

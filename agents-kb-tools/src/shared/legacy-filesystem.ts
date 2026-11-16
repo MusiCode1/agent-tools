@@ -1,5 +1,5 @@
 import { opendirSync, existsSync, statSync } from 'node:fs';
-import { isAbsolute, join, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, sep } from 'node:path';
 import { compareCodePoints } from './text.js';
 
 /** pathlib.rglob visits a directory before its descendants, and does not follow
@@ -38,4 +38,15 @@ export function comparePaths(left: string, right: string): number {
     if (cmp) return cmp;
   }
   return a.length - b.length;
+}
+
+/**
+ * Workflows that live next to their entity: Markdown files under the wiki whose
+ * parent directory is one of `dirNames` (instance key KB_ENTITY_WORKFLOW_DIRS).
+ */
+export function entityWorkflowDirNames(value: string | undefined): string[] {
+  return (value ?? '').split(',').map(x => x.trim()).filter(Boolean);
+}
+export function isEntityWorkflow(file: string, dirNames: string[]): boolean {
+  return dirNames.length > 0 && dirNames.includes(basename(dirname(file)));
 }

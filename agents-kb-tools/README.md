@@ -34,7 +34,7 @@ JavaScript ותלויות מאוגדות, מקורות לאימות חתימות
 | kb-build-agents | build בפרופיל מפורש; ללא --profile נשמר מסלול התאימות |
 | kb-hygiene | שערי תוכן של knowledge.conf |
 | kb-wiki-index | אינדקס ישויות ובחירת כללים במסלול התאימות |
-| kb-workflows-index | אינדקס נהלים מתוך frontmatter; עם `KB_ENTITY_WORKFLOWS_OUT` גם אינדקס הפוך לפי `entities` |
+| kb-workflows-index | אינדקס נהלים מתוך frontmatter; עם `KB_ENTITY_WORKFLOWS_OUT` גם אינדקס הפוך לפי `entities`, ועם `KB_ENTITY_WORKFLOW_DIRS` גם נהלים שיושבים ליד הישות בוויקי |
 | kb-md-fields | חילוץ שדות Markdown ל־Recoll |
 | kb-installation | JSON לתכנון, בדיקה, החלה ושחזור התקנה מפורשת |
 | kb-package-skills | ייצוא סקילים עם הפניות וקובצי עזר |

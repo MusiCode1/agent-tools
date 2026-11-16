@@ -1,5 +1,14 @@
 # יומן פיתוח — agents-kb-tools
 
+## 2026-11-16 — נהלים ליד הישות: KB_ENTITY_WORKFLOW_DIRS
+
+מפתח מופע אופציונלי נוסף: `KB_ENTITY_WORKFLOW_DIRS` — שמות תיקיות תחת `KB_WIKI` שמחזיקות
+נהלים של ישות (למשל `runbooks,diagnostics,flows`). ‏`kb-hygiene` מדלג עליהן בבדיקות של דף
+ישות (מקטע בלי תאריך, "זה רנבוק", תקרה ו־`kind` של דף, שם כפול), ובדיקות `verified`
+ו־`description` ממשיכות לחול עליהן. ‏`kb-workflows-index` מכניס אותן ל־INDEX ולאינדקס
+לפי ישות, עם נתיב יחסי לתיקיית הנהלים (`../wiki/...`). כבוי כברירת מחדל. בדיקות חדשות
+ב־`hygiene.test.ts` וב־`workflows-entity-index.test.ts`; ‏65/65.
+
 ## 2026-11-16 — אינדקס נהלים לפי ישות ב־kb-workflows-index
 
 נוסף מפתח מופע אופציונלי, `KB_ENTITY_WORKFLOWS_OUT`. כשהוא מוגדר, `kb-workflows-index`
