@@ -102,8 +102,13 @@ def pending_reason(agent_id, state):
 def mode_warning(agent_id, state, cli):
     mode = ((state or {}).get("modes") or {}).get("currentModeId")
     want = BYPASS_MODE.get(cli or "")
-    if not want or not mode or mode == want:
+    if not want or mode == want:
         return None
+    if not mode:
+        return (f"הסוכן {agent_id} ({cli}) לא דיווח על מצב הרשאות, ולכן אין לדעת שהוא ב־'{want}'. "
+                "סוכן כזה עשוי לעצור על הכלי הראשון ולחכות לאישור ידני. בדוק את "
+                "pending.permission ב־/state אחרי השליחה, או העבר מצב במפורש "
+                "(session_send.sets או session/set_mode).")
     return (f"הסוכן {agent_id} ({cli}) במצב ההרשאות '{mode}', לא '{want}': כל כלי שידרוש "
             "אישור ימתין לאישור ידני. אם המשימה צריכה לרוץ בלי עצירה, העבר מצב "
             "(session_send.sets או session/set_mode) או בקש מהמשתמש; אם המצב הידני מכוון, המשך.")
@@ -167,7 +172,8 @@ def handle(payload):
         mode = ((state or {}).get("modes") or {}).get("currentModeId")
         if not state:
             return out_allow(event)
-        note = f"הסוכן {agent_id} נפתח במצב ההרשאות '{mode}'."
+        note = (f"הסוכן {agent_id} נפתח במצב ההרשאות '{mode}'." if mode
+                else f"הסוכן {agent_id} נפתח בלי דיווח על מצב הרשאות.")
         warn = mode_warning(agent_id, state, cli)
         if warn:
             warn_once(session_id, agent_id)

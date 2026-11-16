@@ -11,7 +11,7 @@ answer as final. The hook closes that gap:
 
 | Event | What it does |
 |---|---|
-| `PreToolUse` on `mcp__drive-coding__session_send` | **Deny** when `pending.permission` is set; **warn once** per agent when a Claude child is not in `bypassPermissions` and the call does not change the mode |
+| `PreToolUse` on `mcp__drive-coding__session_send` | **Deny** when `pending.permission` is set; **warn once** per agent when a Claude child is not in `bypassPermissions`, or reports no mode at all, and the call does not change the mode |
 | `PreToolUse` on `Bash` | Same check for `curl …/api/agents/<id>/rpc` with `session/prompt`, against the base URL in the command |
 | `PostToolUse` on `mcp__drive-coding__session_open` | Inject the mode the child opened in |
 | Cursor `beforeMCPExecution` | Deny on a pending permission |

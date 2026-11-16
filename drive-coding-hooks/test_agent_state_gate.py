@@ -77,6 +77,12 @@ class GateTests(unittest.TestCase):
         self.assertNotIn("permissionDecision", first["hookSpecificOutput"])
         self.assertEqual(self.run_gate(self.send()), {"continue": True})
 
+    def test_unreported_claude_mode_warns(self):
+        self.agent(mode=None)
+        AGENTS[AGENT]["state"]["modes"] = None
+        out = self.run_gate(self.send())
+        self.assertIn("לא דיווח על מצב הרשאות", out["hookSpecificOutput"]["additionalContext"])
+
     def test_mode_change_in_same_call_skips_warning(self):
         self.agent(mode="default")
         self.assertEqual(self.run_gate(self.send(sets={"mode": "bypassPermissions"})), {"continue": True})
