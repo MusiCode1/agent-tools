@@ -45,7 +45,12 @@ COPY config/chromium/browser-launch /usr/local/bin/linux-gui-browser-launch
 COPY config/chromium/browser-close /usr/local/bin/linux-gui-browser-close
 COPY config/chromium/open-url /usr/local/bin/linux-gui-open-url
 COPY config/host-network.py /usr/local/lib/linux-gui-host-network.py
-RUN python3 /usr/local/lib/linux-gui-host-network.py
+# Loopback-only listeners are required with Compose host networking, where the
+# container shares the host's interfaces. A container with its own network
+# namespace (e.g. Incus) can pass LINUX_GUI_LOOPBACK_ONLY=0 and filter at its
+# network boundary instead; that also avoids depending on upstream templates.
+ARG LINUX_GUI_LOOPBACK_ONLY=1
+RUN if [ "$LINUX_GUI_LOOPBACK_ONLY" = 1 ]; then python3 /usr/local/lib/linux-gui-host-network.py; fi
 COPY config/init/10-linux-gui-permissions /custom-cont-init.d/10-linux-gui-permissions
 COPY config/services/linux-gui-sshd /custom-services.d/linux-gui-sshd
 COPY config/desktop/startwm.sh /defaults/startwm.sh
