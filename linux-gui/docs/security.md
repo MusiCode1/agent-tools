@@ -9,6 +9,12 @@
 
 ## Boundaries
 
+The list below describes the Compose deployment. For a container on another
+host reached over SSH, see the network boundary and SSH sections of
+[deploy-incus.md](deploy-incus.md): there the desktop is reached only through a
+host-loopback proxy, SSH is open to the agents' address only, and only the
+browser user can log in, by key.
+
 - Webtop HTTPS is bound to `127.0.0.1` only.
 - CDP listens on shared host/container loopback. Every local host process with
   network access can reach it; Compose uses host networking, not port publishing.

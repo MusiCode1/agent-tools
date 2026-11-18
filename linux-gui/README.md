@@ -47,6 +47,15 @@ python3 tests/open-url.py
 
 Agent usage is documented in the project-local skill at `.agents/skills/linux-gui/SKILL.md`.
 
+## Remote container over SSH
+
+When the GUI container runs on another host, for example as an Incus OCI
+container, set `LINUX_GUI_TRANSPORT=ssh` and `LINUX_GUI_SSH_HOST=<ssh host>`.
+The same `linux-gui` commands then run over SSH as the browser user, and no
+`.env` is needed on the agents' side. The image's SSH service stays off
+unless `/data/ssh` is mounted. Setup, network boundary and the Incus pitfalls
+are covered in [docs/deploy-incus.md](docs/deploy-incus.md).
+
 ## Security warning
 
 Anyone who can access this desktop can act as the accounts logged into its browser profiles. The GUI and Chrome DevTools Protocol are intentionally local-only. Remote browser access is protected by Cloudflare Access; CDP is never exposed. Webtop's built-in Basic Auth is intentionally disabled.

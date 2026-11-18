@@ -20,7 +20,8 @@ This repository builds a persistent, local-only Linux GUI for manual and automat
 
 ## Security boundaries
 
-- Keep the web desktop and CDP on loopback.
+- Keep the web desktop and CDP on loopback. In the SSH deployment (`docs/deploy-incus.md`) the container has its own network namespace; keep them unreachable from any address except the documented proxy and the agents' SSH source.
+- The image's SSH service must stay disabled unless `/data/ssh` is mounted, and must allow only `abc` by key with forwarding off.
 - Never mount the Docker socket or use privileged mode.
 - `seccomp=unconfined` is an explicitly accepted exception required by Chrome sandbox initialization. Do not add capabilities or `--no-sandbox` around it.
 - Never add `--no-sandbox` to Chrome.
