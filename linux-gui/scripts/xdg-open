@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Keep file and custom-scheme handlers intact. This also covers headless callers
+# which do not inherit BROWSER, without replacing the system xdg-utils package.
+if [[ $# == 1 ]]; then
+  case "$1" in
+    http://*|https://*) exec "$(dirname "$0")/linux-gui-open-url" "$1" ;;
+  esac
+fi
+exec /usr/bin/xdg-open "$@"

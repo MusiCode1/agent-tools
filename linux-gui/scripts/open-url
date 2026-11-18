@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$(realpath "$0")")/lib.sh"
+load_env
+[[ $# == 1 ]] || die "Usage: open-url HTTP_OR_HTTPS_URL"
+case "$1" in
+  http://?*|https://?*) ;;
+  *) die "Only HTTP and HTTPS URLs are supported" ;;
+esac
+profile=${LINUX_GUI_DEFAULT_PROFILE:-user}
+validate_profile "$profile"
+require_container
+exec docker exec --user abc linux-gui linux-gui-open-url "$profile" "$1"

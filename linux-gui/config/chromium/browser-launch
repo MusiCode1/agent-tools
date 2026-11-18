@@ -19,6 +19,8 @@ runtime_dir="/data/browser-projects/$profile_name/runtime"
 artifacts_dir="/data/browser-projects/$profile_name/artifacts"
 mkdir -p "$profile_dir" "$runtime_dir" "$artifacts_dir"
 chmod 0700 "$profile_dir" "$runtime_dir"
+exec 8>"$runtime_dir/launch.lock"
+flock -w 30 8
 
 if pgrep -f -- "--user-data-dir=$profile_dir" >/dev/null 2>&1; then
   echo "Profile '$profile_name' is already used by a Chrome process" >&2
@@ -66,7 +68,15 @@ fi
 if [[ "$mode" == cdp ]]; then
   port=""
   for candidate in $(seq 9222 9299); do
-    if ! curl -fsS --max-time 0.2 "http://127.0.0.1:$candidate/json/version" >/dev/null 2>&1; then
+    if python3 - "$candidate" <<'PY'
+import socket, sys
+with socket.socket() as sock:
+    try:
+        sock.bind(('127.0.0.1', int(sys.argv[1])))
+    except OSError:
+        sys.exit(1)
+PY
+    then
       port=$candidate
       break
     fi
@@ -83,7 +93,7 @@ if [[ "$mode" == cdp ]]; then
   printf '%s\n' "$port" >"$runtime_dir/cdp-port"
 fi
 
-nohup google-chrome "${chrome_args[@]}" >"$runtime_dir/chrome.log" 2>&1 &
+nohup google-chrome "${chrome_args[@]}" >"$runtime_dir/chrome.log" 2>&1 8>&- 9>&- &
 pid=$!
 printf '%s\n' "$pid" >"$runtime_dir/pid"
 printf '%s\n' "$mode" >"$runtime_dir/mode"

@@ -41,6 +41,9 @@ RUN apt-get update \
 COPY config/chromium/policies.json /etc/opt/chrome/policies/managed/linux-gui.json
 COPY config/chromium/browser-launch /usr/local/bin/linux-gui-browser-launch
 COPY config/chromium/browser-close /usr/local/bin/linux-gui-browser-close
+COPY config/chromium/open-url /usr/local/bin/linux-gui-open-url
+COPY config/host-network.py /usr/local/lib/linux-gui-host-network.py
+RUN python3 /usr/local/lib/linux-gui-host-network.py
 COPY config/init/10-linux-gui-permissions /custom-cont-init.d/10-linux-gui-permissions
 COPY config/desktop/startwm.sh /defaults/startwm.sh
 COPY config/desktop/menu.xml /defaults/linux-gui-menu.xml
@@ -49,6 +52,7 @@ COPY config/desktop/apps-menu /usr/local/bin/linux-gui-apps-menu
 RUN chmod 0755 \
       /usr/local/bin/linux-gui-browser-launch \
       /usr/local/bin/linux-gui-browser-close \
+      /usr/local/bin/linux-gui-open-url \
       /usr/local/bin/linux-gui-apps-menu \
       /custom-cont-init.d/10-linux-gui-permissions \
       /defaults/startwm.sh

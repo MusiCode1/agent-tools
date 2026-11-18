@@ -15,6 +15,7 @@ case "$command" in
   status) compose ps "$@" ;;
   logs) compose logs -f "$@" ;;
   shell) require_container; docker exec -it --user abc linux-gui bash ;;
+  open-url) exec "$PROJECT_ROOT/scripts/open-url" "$@" ;;
   profile)
     sub=${1:-}
     shift || true
@@ -37,7 +38,7 @@ case "$command" in
     ;;
   health) exec "$PROJECT_ROOT/scripts/healthcheck" ;;
   *)
-    echo "Usage: linux-gui {up|down|status|logs|shell|health|profile|browser}"
+    echo "Usage: linux-gui {up|down|status|logs|shell|health|profile|browser|open-url}"
     exit 2
     ;;
 esac

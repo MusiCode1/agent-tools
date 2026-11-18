@@ -2,6 +2,49 @@
 
 A persistent Linux desktop for manual GUI work and browser automation. It combines LinuxServer Webtop, Google Chrome, and Playwright CLI while keeping each browser identity in an explicit, non-standard `user-data-dir`.
 
+## פתיחת קישורים מהמארח
+
+```bash
+./scripts/linux-gui open-url 'https://example.com/'
+./scripts/install-url-handler
+```
+
+המתקין רושם handlers של HTTP/HTTPS למשתמש הנוכחי ומוסיף `xdg-open`
+תחת `~/.local/bin` (התיקייה צריכה להופיע לפני `/usr/bin` ב־PATH).
+הוסיפו לקובץ הסביבה המשותף של ה־shell:
+
+```sh
+export BROWSER="$HOME/.local/bin/linux-gui-open-url"
+```
+
+פרופיל ברירת המחדל הוא `user`; אפשר לבחור `LINUX_GUI_DEFAULT_PROFILE`
+ב־`.env`. פרופיל פתוח מקבל טאב חדש ושומר על מצב manual/CDP; פרופיל סגור
+נפתח במצב CDP. הפקודה מסרבת לפרופיל שאינו קיים. קריאות מקבילות מסודרות בנעילה.
+קבצים וסכמות אחרות מועברים ל־`/usr/bin/xdg-open`. תוכנה שמפעילה דפדפן
+מסוים במפורש דורשת הגדרה משלה; תהליך קיים אינו יורש משתני סביבה חדשים.
+
+## localhost ורשת המארח
+
+Compose משתמש ב־`network_mode: host` בלינוקס. כתובות `127.0.0.1` ו־`::1`
+משותפות לקונטיינר ולמארח, לרבות callbacks של OAuth בפורטים דינמיים.
+אין בידוד רשת ביניהם: פורטים תפוסים ושירותי loopback משותפים.
+nginx ו־Selkies מוגבלים ל־loopback בתמונה; אין להפעיל Compose זה עם תמונה
+ישנה שאינה מכילה את `config/host-network.py`.
+
+פורטי ברירת המחדל: HTTPS ב־`6080`, HTTP ב־`6079`, WebSocket ב־`6082`,
+ו־control API אופציונלי ב־`6083`. אפשר לשנותם ב־`.env`; כל הפורטים צריכים
+להיות פנויים. מיפויי Docker מסוג `ports` אינם בשימוש.
+
+```bash
+docker compose --env-file .env config --quiet
+./tests/smoke.sh
+python3 tests/open-url.py
+```
+
+הבדיקה האחרונה יוצרת פרופיל זמני ושרתי callback במארח, ובודקת מקביליות,
+תווים מיוחדים בכתובת, תפיסת פורט CDP, מצב ידני ו־IPv4/IPv6. היא מוחקת רק את
+הפרופיל שהיא יצרה. אפשר להגדיר `GUI_TEST_CONTAINER` לבדיקת קונטיינר מבודד.
+
 Agent usage is documented in the project-local skill at `.agents/skills/linux-gui/SKILL.md`.
 
 ## Security warning

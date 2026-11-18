@@ -8,6 +8,7 @@ services:
         NODE_VERSION: "22.17.1"
         PLAYWRIGHT_CLI_VERSION: "0.1.17"
     container_name: linux-gui
+    network_mode: host
     restart: unless-stopped
     shm_size: "2gb"
     # ─── resource caps (host = 8GB / 2 cores, shared with BE + agents) ───────────
@@ -31,6 +32,10 @@ services:
       START_DOCKER: "false"
       LC_ALL: en_US.UTF-8
       LANG: en_US.UTF-8
+      CUSTOM_PORT: ${LINUX_GUI_HTTP_PORT:-6079}
+      CUSTOM_HTTPS_PORT: ${LINUX_GUI_PORT:-6080}
+      CUSTOM_WS_PORT: ${LINUX_GUI_WS_PORT:-6082}
+      SELKIES_CONTROL_PORT: ${LINUX_GUI_CONTROL_PORT:-6083}
       # ─── proxy עם מתג-ניתוק (בדיקות חיבור-מחדש) ──────────────────────────────
       # ריק כברירת-מחדל ⇒ אפס שינוי התנהגות. להפעלה: LINUX_GUI_PROXY ב-.env,
       # למשל http://172.16.1.1:4130 (172.16.1.1 = המארח מנקודת-מבט הקונטיינר;
@@ -43,8 +48,6 @@ services:
       https_proxy: ${LINUX_GUI_PROXY:-}
       NO_PROXY: localhost,127.0.0.1,::1
       no_proxy: localhost,127.0.0.1,::1
-    ports:
-      - "127.0.0.1:${LINUX_GUI_PORT:-6080}:3001"
     volumes:
       - type: bind
         source: ${LINUX_GUI_CONFIG:?Set LINUX_GUI_CONFIG in .env}
@@ -62,7 +65,7 @@ services:
         source: ${LINUX_GUI_WORKSPACE:?Set LINUX_GUI_WORKSPACE in .env}
         target: /workspace
     healthcheck:
-      test: ["CMD-SHELL", "curl -ksS https://127.0.0.1:3001/ >/dev/null"]
+      test: ["CMD-SHELL", "curl -fkSs https://127.0.0.1:$${CUSTOM_HTTPS_PORT}/ >/dev/null"]
       interval: 10s
       timeout: 5s
       retries: 12

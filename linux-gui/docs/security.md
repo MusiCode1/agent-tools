@@ -10,7 +10,12 @@
 ## Boundaries
 
 - Webtop HTTPS is bound to `127.0.0.1` only.
-- CDP listens on container loopback and is not published by Compose.
+- CDP listens on shared host/container loopback. Every local host process with
+  network access can reach it; Compose uses host networking, not port publishing.
+- nginx HTTP/HTTPS and Selkies WebSocket/control listeners bind only to loopback.
+  The build checks the upstream templates before patching; unexpected versions fail.
+- Host networking intentionally removes network isolation: the browser can reach
+  host-local services, and container listeners occupy host ports.
 - The Docker socket is not mounted.
 - The container is not privileged and retains the Chrome sandbox.
 - Docker's default seccomp filter is disabled for this service because it blocks the namespace operations required to initialize Chrome's own sandbox. The container remains unprivileged, receives no additional capabilities, and does not use `--no-sandbox`.

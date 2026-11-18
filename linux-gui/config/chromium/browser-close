@@ -12,7 +12,8 @@ runtime_dir="/data/browser-projects/$profile_name/runtime"
 
 if [[ -f "$runtime_dir/pid" ]]; then
   pid=$(<"$runtime_dir/pid")
-  if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+  if [[ "$pid" =~ ^[0-9]+$ ]] && [[ -r "/proc/$pid/cmdline" ]] &&
+      tr '\0' '\n' <"/proc/$pid/cmdline" | grep -Fxq -- "--user-data-dir=$profile_dir"; then
     kill -TERM "$pid"
     for _ in $(seq 1 30); do
       kill -0 "$pid" 2>/dev/null || break
@@ -21,8 +22,18 @@ if [[ -f "$runtime_dir/pid" ]]; then
   fi
 fi
 
-# Chrome helpers retain the exact profile argument; terminate only this profile.
-pkill -TERM -f -- "--user-data-dir=$profile_dir" 2>/dev/null || true
+# Recover stale metadata by matching an exact argv item, never a process-name
+# pattern. The profile caller is responsible for owning the browser it closes.
+python3 - "$profile_dir" <<'PY'
+import os, pathlib, signal, sys
+expected = ('--user-data-dir=' + sys.argv[1]).encode()
+for process in pathlib.Path('/proc').glob('[0-9]*'):
+    try:
+        if expected in (process / 'cmdline').read_bytes().split(b'\0'):
+            os.kill(int(process.name), signal.SIGTERM)
+    except (ProcessLookupError, FileNotFoundError, PermissionError):
+        pass
+PY
 rm -f \
   "$profile_dir/SingletonLock" \
   "$profile_dir/SingletonCookie" \

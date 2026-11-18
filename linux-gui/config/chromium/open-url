@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $# == 2 ]] || { echo "Usage: linux-gui-open-url PROFILE URL" >&2; exit 2; }
+profile=$1
+url=$2
+[[ "$profile" =~ ^[A-Za-z0-9._-]+$ && "$profile" != . && "$profile" != .. ]] || exit 2
+case "$url" in http://?*|https://?*) ;; *) echo "Only HTTP and HTTPS URLs are supported" >&2; exit 2;; esac
+profile_dir="/data/browser-profiles/$profile"
+runtime_dir="/data/browser-projects/$profile/runtime"
+[[ -d "$profile_dir" ]] || { echo "Profile does not exist: $profile" >&2; exit 2; }
+mkdir -p "$runtime_dir"
+chmod 0700 "$runtime_dir"
+exec 9>"$runtime_dir/open-url.lock"
+flock -w 30 9
+
+# Chrome forwards a new invocation to the existing profile through its singleton
+# socket, including in manual mode. Never delete its locks or restart that browser.
+if pgrep -f -- "--user-data-dir=$profile_dir([[:space:]]|$)" >/dev/null; then
+  export HOME=/config XDG_CONFIG_HOME=/config/.config DISPLAY=${DISPLAY:-:1}
+  export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+  google-chrome --user-data-dir="$profile_dir" --new-tab "$url" >/dev/null 2>&1
+else
+  linux-gui-browser-launch "$profile" cdp "$url" >/dev/null
+fi

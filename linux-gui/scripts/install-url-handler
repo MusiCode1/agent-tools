@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$(realpath "$0")")/lib.sh"
+install -d "$HOME/.local/bin" "$HOME/.local/share/applications"
+for entry in linux-gui-open-url xdg-open; do
+  source_name=$entry
+  [[ "$entry" == linux-gui-open-url ]] && source_name=open-url
+  target="$HOME/.local/bin/$entry"
+  if [[ -e "$target" || -L "$target" ]]; then
+    [[ -L "$target" && "$(readlink "$target")" == "$PROJECT_ROOT/scripts/$source_name" ]] || die "Refusing to replace existing $target"
+  fi
+  ln -sfn "$PROJECT_ROOT/scripts/$source_name" "$target"
+done
+python3 - <<'PY'
+from pathlib import Path
+import re
+home = Path.home()
+opener = str(home / '.local/bin/linux-gui-open-url')
+# xdg-utils' generic launcher treats quotes as part of the executable name.
+# A simple absolute path works there; unusual home paths use the PATH entry.
+executable = opener if re.fullmatch(r'[/A-Za-z0-9_.-]+', opener) else 'linux-gui-open-url'
+desktop = home / '.local/share/applications/linux-gui-browser.desktop'
+desktop.write_text('[Desktop Entry]\nType=Application\nName=Linux GUI Browser\n'
+                   f'Exec={executable} %u\nTerminal=false\nNoDisplay=true\n'
+                   'MimeType=x-scheme-handler/http;x-scheme-handler/https;\n')
+PY
+xdg-mime default linux-gui-browser.desktop x-scheme-handler/http x-scheme-handler/https
+echo 'HTTP/HTTPS handlers installed. Set BROWSER to ~/.local/bin/linux-gui-open-url in your shared environment.'

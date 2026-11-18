@@ -20,3 +20,4 @@ shell:
 
 test:
 	./tests/smoke.sh
+	python3 tests/open-url.py
