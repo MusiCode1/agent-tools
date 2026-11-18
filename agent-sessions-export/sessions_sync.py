@@ -5,8 +5,11 @@ Each machine exports only rows of *its own* machine (sessions.machine = config.m
 newer than a cursor on the source's `messages.updated_at`. The importer keeps the
 semantics of the 2026-11-02 one-time merge (merge.py): new rows are copied with their
 original keys (user/assistant text also into messages_fts, which has no triggers);
-existing rows only get NULL columns and missing JSON keys filled, never overwritten;
-differing non-core values are kept as evidence; a core identity/content collision stops.
+existing messages only get NULL columns and missing JSON keys filled, never overwritten,
+and differing non-core values are kept as evidence; a core identity/content collision stops.
+Session rows differ: a session keeps growing on the machine that owns it (ended_at, title,
+usage), and only rows of their own machine ever arrive, so a non-NULL incoming value wins —
+the same rule export.ts applies to its own sessions (insSess in db.ts).
 
     sessions_sync.py export --since MS          stream own rows to stdout (MS < 0: everything)
     sessions_sync.py import                     apply a stream from stdin, print a JSON summary
@@ -152,7 +155,7 @@ def import_stream(db, stream, own_machine, evidence_dir=None, reserve=RESERVE):
 
 def _import(c, db, stream, own_machine, evidence_dir, reserve):
     c.execute("pragma journal_mode=wal")
-    st = {"sessions_new": 0, "sessions_enriched": 0, "messages_new": 0, "messages_enriched": 0,
+    st = {"sessions_new": 0, "sessions_enriched": 0, "sessions_updated": 0, "messages_new": 0, "messages_enriched": 0,
           "messages_existing": 0, "fts_added": 0, "conflicts": 0, "role_variants": 0}
     h = hashlib.sha256(); seen = {"session": 0, "message": 0}; footer = None
     conflicts = []
@@ -191,6 +194,14 @@ def _import(c, db, stream, own_machine, evidence_dir, reserve):
                 if core:
                     raise SyncError(f"message identity/content collision: {row[0].decode()} ({','.join(core)})")
             new, differing = list(old), False
+            if kind == "session":
+                # The owner's newer values win; a NULL from the owner never erases a known value.
+                new = [row[i] if row[i] is not None else old[i] for i in range(len(cols))]
+                if new != list(old):
+                    st["sessions_updated"] += 1
+                    fields = ",".join(f"{x}=" + ("cast(? as text)" if x in TEXT else "?") for x in cols[1:])
+                    c.execute(f"update {table} set {fields} where {key}=?", new[1:] + [row[0].decode()])
+                continue
             for i, col in enumerate(cols):
                 if col == "updated_at": continue
                 if col in ("extra", "meta", "usage"):

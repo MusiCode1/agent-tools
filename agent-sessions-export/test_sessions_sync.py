@@ -120,6 +120,22 @@ class SessionsSyncTest(unittest.TestCase):
             kind, row = json.loads(f.readline())
         self.assertEqual(ss.dec(row[5]), b"remote-model", "the differing remote value is kept as evidence")
 
+    def test_session_rows_follow_their_owner_but_null_never_erases(self):
+        """A session keeps growing where it runs: newer ended_at/title/usage arrive; NULL does not erase."""
+        out, _ = stream(self.a, "alpha", -1); ss.import_stream(self.b, out, "beta")
+        c = self.conn(self.a)
+        c.execute("update sessions set ended_at=77, title='longer title', usage='{\"t\":2}', cwd=NULL where session_id='s1'")
+        c.execute("update messages set updated_at=9500 where id='m1'")   # the session has news
+        c.commit()
+        cb = self.conn(self.b)
+        cb.execute("update sessions set cwd='/known/cwd' where session_id='s1'"); cb.commit()
+        out, _ = stream(self.a, "alpha", 3000)
+        r = ss.import_stream(self.b, out, "beta", self.d / "evidence")
+        self.assertEqual(r["sessions_updated"], 1)
+        self.assertEqual(r["conflicts"], 0, "session growth is not a conflict")
+        row = cb.execute("select ended_at, title, usage, cwd from sessions where session_id='s1'").fetchone()
+        self.assertEqual(row, (77, "longer title", '{"t":2}', "/known/cwd"))
+
     def test_content_collision_stops(self):
         out, _ = stream(self.a, "alpha", -1); ss.import_stream(self.b, out, "beta")
         c = self.conn(self.a); c.execute("update messages set text='changed', updated_at=9999 where id='m1'"); c.commit(); c.close()
