@@ -59,6 +59,47 @@ append-only: סשן שכבר יוצא לא נכתב מחדש.
 נתיב חדש נרשם אוטומטית ב-`paths` (רק בשלב 2 — דליים גנריים לא נרשמים,
 אחרת `/home/user` בולע כתחילית את כל מה שתחתיו).
 
+## סנכרון בין מכונות — `sessions_sync.py`
+
+לכל מכונה יש מסד חיפוש משלה. ‏`sessions_sync.py` מעביר ביניהן שורות באופן מצטבר.
+כל מכונה שולחת רק שורות של עצמה (`sessions.machine`), שחדשות מהסמן על
+`messages.updated_at` של המקור. כך שורות לא חוזרות למכונה ששלחה אותן.
+
+```bash
+python3 sessions_sync.py export --since <ms>     # ‏-1: הכל, כולל שורות בלי updated_at
+python3 sessions_sync.py import < stream         # מסכם ב־JSON
+python3 sessions_sync.py run [--peer NAME]       # לפי ~/.config/agent-sessions/sync.json
+python3 sessions_sync.py serve                   # ל־command= ב־authorized_keys
+```
+
+`sync.json`:
+
+```json
+{"peers": [
+  {"name": "other", "machine": "<machine name there>", "direction": "both",
+   "ssh": ["ssh", "-i", "<key>", "-o", "BatchMode=yes", "-C", "<user>@<host>"]}
+]}
+```
+
+- **`direction`:** הערך `both`, `pull` (מושך בלבד, ולא שולח) או `push`. לצד
+  שאסור לקבל ממנו את המסד המעורב, מושכים ב־`pull` בלבד.
+- **`ssh`:** הפקודה שמגיעה לצד השני. אם שם יש `command=` שמפנה ל־`serve`, מספיקה
+  כתובת. בלי `command=`, הרכיב האחרון ברשימה הוא נתיב ההרצה, למשל
+  `"python3 ~/path/sessions_sync.py"`. ‏`export --since …` או `import` מתווספים אחריו.
+- **הסמנים** נשמרים ב־`export_state` של המסד המקומי (`sync:pulled:<machine>`,
+  `sync:pushed:<machine>`), עם מרווח של שתי דקות לשורות של טרנזקציה שעוד פתוחה.
+- **ההחלה:** שורה חדשה נכנסת עם המפתחות המקוריים, וטקסט של `user`/`assistant`
+  נכנס גם ל־`messages_fts`. בשורה קיימת מתמלאים רק NULL ומפתחות JSON חסרים,
+  ושום ערך לא נדרס. ערכים שונים נשמרים כראיה תחת
+  `~/.local/state/agent-sessions/sync/evidence/`. התנגשות זהות או תוכן עוצרת.
+- **זרם קטוע** נכשל בבדיקת ה־footer (sha256 וספירות). מנות שכבר נכנסו תקינות,
+  והרצה חוזרת לא מכפילה אותן.
+- **עתודת דיסק:** ההחלה עוצרת לפני שבמערכת הקבצים של המסד נשארים פחות מ־768MiB.
+
+`export.ts` רץ גם בלי מסד cass. הוא מדפיס אזהרה, וממשיך עם הקוראים הישירים.
+⚠️ **`machine` בקונפיג חייב להיות שם המכונה הזו.** קונפיג שהועתק ממכונה אחרת
+יכתוב את הסשנים תחת הזהות שלה.
+
 ## סקיל
 
 `skill/SKILL.md` — סקיל תקני שמסביר לסוכנים איך לחפש בארכיון.
