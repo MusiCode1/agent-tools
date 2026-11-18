@@ -105,7 +105,12 @@ if (REBUILD_DB) {
 }
 
 const DB_PATH = cfg.cass_db ?? join(HOME, ".local/share/coding-agent-search/agent_search.db");
-if (!existsSync(DB_PATH)) die(`ארכיון cass לא נמצא: ${DB_PATH}`);
+// cass is one source among several. A machine without it still has the direct readers below —
+// Claude JSONL, Codex, Cursor, opencode — so a missing cass DB is skipped out loud instead of
+// stopping the whole export. Measured 2026-11-18: on a machine whose cass index had been stale
+// for two months, every newer session had come from the direct readers.
+const HAVE_CASS = existsSync(DB_PATH);
+if (!HAVE_CASS) console.error(`⚠️ ארכיון cass לא נמצא (${DB_PATH}); מדלג עליו, וממשיך עם הקוראים הישירים`);
 
 // ---------- helpers ----------
 const globToRe = (g: string) => new RegExp("^" + g.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$");
@@ -200,15 +205,15 @@ for (const [name, root] of Object.entries(cfg.repos)) {
 }
 
 // ---------- read archive ----------
-const db = new Database(DB_PATH, { readonly: true });
-const convs = db.query(`
+const db = HAVE_CASS ? new Database(DB_PATH, { readonly: true }) : null;
+const convs = !db ? [] : db.query(`
   SELECT c.*, a.name AS agent_name, w.path AS workspace_path
   FROM conversations c
   LEFT JOIN agents a ON a.id = c.agent_id
   LEFT JOIN workspaces w ON w.id = c.workspace_id
   ORDER BY c.started_at
 `).all() as any[];
-const msgStmt = db.query(`SELECT role, author, created_at, content FROM messages WHERE conversation_id = ? ORDER BY idx`);
+const msgStmt = db?.query(`SELECT role, author, created_at, content FROM messages WHERE conversation_id = ? ORDER BY idx`);
 
 // אינדקס .jsonl של Claude — מטא-דאטה שקיימת במקור ו-cass לא שימרה
 // (agent_setting, git_branch, is_sidechain, cli_version, ספירת attachments).
@@ -247,7 +252,7 @@ for (const c of convs) {
   const jsonPath = join(jsonDir, base + ".json");
   const mdPath = join(mdDir, base + ".md");
 
-  const msgs = msgStmt.all(c.id) as any[];
+  const msgs = msgStmt!.all(c.id) as any[];
   if (!DB_BACKFILL && existsSync(jsonPath) && isCurrent(jsonPath, msgs.length)) { alreadyDone++; continue; }
   const session = {
     export_version: EXPORT_VERSION,
