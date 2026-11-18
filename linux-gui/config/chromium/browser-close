@@ -25,14 +25,26 @@ fi
 # Recover stale metadata by matching an exact argv item, never a process-name
 # pattern. The profile caller is responsible for owning the browser it closes.
 python3 - "$profile_dir" <<'PY'
-import os, pathlib, signal, sys
+import os, pathlib, signal, sys, time
 expected = ('--user-data-dir=' + sys.argv[1]).encode()
-for process in pathlib.Path('/proc').glob('[0-9]*'):
+
+def matching():
+    for process in pathlib.Path('/proc').glob('[0-9]*'):
+        try:
+            if expected in (process / 'cmdline').read_bytes().split(b'\0'):
+                yield int(process.name)
+        except (FileNotFoundError, PermissionError, ProcessLookupError):
+            pass
+
+for pid in matching():
     try:
-        if expected in (process / 'cmdline').read_bytes().split(b'\0'):
-            os.kill(int(process.name), signal.SIGTERM)
-    except (ProcessLookupError, FileNotFoundError, PermissionError):
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
         pass
+# Helpers exit after the browser; wait so an immediate relaunch does not see them.
+deadline = time.monotonic() + 10
+while time.monotonic() < deadline and any(True for _ in matching()):
+    time.sleep(0.1)
 PY
 rm -f \
   "$profile_dir/SingletonLock" \

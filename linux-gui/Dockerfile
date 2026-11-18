@@ -12,6 +12,7 @@ RUN apt-get update \
         git \
         jq \
         openssh-client \
+        openssh-server \
         ripgrep \
         tint2 \
         xfe \
@@ -36,6 +37,7 @@ RUN apt-get update \
     && npm install --global "@playwright/cli@${PLAYWRIGHT_CLI_VERSION}" \
     && google-chrome --version \
     && playwright-cli --version \
+    && rm -f /etc/ssh/ssh_host_* \
     && rm -rf /var/lib/apt/lists/* /tmp/google-chrome.deb /tmp/node.tar.xz /tmp/SHASUMS256.txt
 
 COPY config/chromium/policies.json /etc/opt/chrome/policies/managed/linux-gui.json
@@ -45,6 +47,7 @@ COPY config/chromium/open-url /usr/local/bin/linux-gui-open-url
 COPY config/host-network.py /usr/local/lib/linux-gui-host-network.py
 RUN python3 /usr/local/lib/linux-gui-host-network.py
 COPY config/init/10-linux-gui-permissions /custom-cont-init.d/10-linux-gui-permissions
+COPY config/services/linux-gui-sshd /custom-services.d/linux-gui-sshd
 COPY config/desktop/startwm.sh /defaults/startwm.sh
 COPY config/desktop/menu.xml /defaults/linux-gui-menu.xml
 COPY config/desktop/tint2rc /defaults/linux-gui-tint2rc
@@ -55,4 +58,5 @@ RUN chmod 0755 \
       /usr/local/bin/linux-gui-open-url \
       /usr/local/bin/linux-gui-apps-menu \
       /custom-cont-init.d/10-linux-gui-permissions \
+      /custom-services.d/linux-gui-sshd \
       /defaults/startwm.sh

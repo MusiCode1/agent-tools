@@ -6,6 +6,19 @@ source_name=${1:?Usage: profile-clone SOURCE TARGET}
 target_name=${2:?Usage: profile-clone SOURCE TARGET}
 validate_profile "$source_name"
 validate_profile "$target_name"
+if is_ssh; then
+  profile_exists "$source_name" || die "Source profile does not exist: $source_name"
+  profile_exists "$target_name" && die "Target profile already exists: $target_name"
+  profile_is_running "$source_name" && die "Source profile is open: $source_name"
+  # shellcheck disable=SC2016
+  gui_exec bash -c 'set -e; cp -a "/data/browser-profiles/$1" "/data/browser-profiles/$2"
+    find "/data/browser-profiles/$2" -maxdepth 2 \( -type f -o -type l \) \
+      \( -name SingletonLock -o -name SingletonCookie -o -name SingletonSocket \) -delete
+    install -d -m 0700 "/data/browser-projects/$2/runtime"
+    install -d -m 0750 "/data/browser-projects/$2/artifacts"' _ "$source_name" "$target_name"
+  echo "Cloned profile: $source_name -> $target_name"
+  exit 0
+fi
 source_dir="$LINUX_GUI_BROWSER_PROFILES/$source_name"
 target_dir="$LINUX_GUI_BROWSER_PROFILES/$target_name"
 [[ -d "$source_dir" ]] || die "Source profile does not exist: $source_name"

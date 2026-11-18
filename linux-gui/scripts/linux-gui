@@ -14,7 +14,7 @@ case "$command" in
   down) compose down "$@" ;;
   status) compose ps "$@" ;;
   logs) compose logs -f "$@" ;;
-  shell) require_container; docker exec -it --user abc linux-gui bash ;;
+  shell) require_container; gui_exec --tty bash ;;
   open-url) exec "$PROJECT_ROOT/scripts/open-url" "$@" ;;
   profile)
     sub=${1:-}
@@ -22,7 +22,13 @@ case "$command" in
     case "$sub" in
       create) exec "$PROJECT_ROOT/scripts/profile-create" "$@" ;;
       clone) exec "$PROJECT_ROOT/scripts/profile-clone" "$@" ;;
-      list) find "$LINUX_GUI_BROWSER_PROFILES" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort ;;
+      list)
+        if is_ssh; then
+          gui_exec find /data/browser-profiles -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
+        else
+          find "$LINUX_GUI_BROWSER_PROFILES" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
+        fi
+        ;;
       *) die "Usage: linux-gui profile {create|clone|list}" ;;
     esac
     ;;

@@ -10,4 +10,4 @@ esac
 profile=${LINUX_GUI_DEFAULT_PROFILE:-user}
 validate_profile "$profile"
 require_container
-exec docker exec --user abc linux-gui linux-gui-open-url "$profile" "$1"
+gui_exec linux-gui-open-url "$profile" "$1"

@@ -4,6 +4,13 @@ source "$(dirname "$0")/lib.sh"
 load_env
 name=${1:?Usage: profile-create NAME}
 validate_profile "$name"
+if is_ssh; then
+  gui_exec test ! -e "/data/browser-profiles/$name" || die "Profile already exists: $name"
+  gui_exec install -d -m 0700 "/data/browser-profiles/$name" "/data/browser-projects/$name/runtime"
+  gui_exec install -d -m 0750 "/data/browser-projects/$name/artifacts"
+  echo "Created profile: $name"
+  exit 0
+fi
 target="$LINUX_GUI_BROWSER_PROFILES/$name"
 [[ ! -e "$target" ]] || die "Profile already exists: $name"
 install -d -m 0700 "$target"

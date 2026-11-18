@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Optional SSH entry for agents that cannot `docker exec` into this container
+# (for example when it runs as an Incus OCI container on another host).
+#
+# Disabled unless /data/ssh is mounted. Layout, all owned by root:
+#   /data/ssh/authorized_keys   managed outside the container
+#   /data/ssh/host/             host keys; generated on first start, kept across rebuilds
+#
+# Only the browser user may log in, with a key, and nothing else is forwarded.
+set -euo pipefail
+
+state=/data/ssh
+if [[ ! -f "$state/authorized_keys" ]]; then
+  echo "[linux-gui-sshd] $state/authorized_keys not mounted; sshd disabled"
+  exec sleep infinity
+fi
+
+install -d -m 0700 "$state/host"
+[[ -f "$state/host/ssh_host_ed25519_key" ]] ||
+  ssh-keygen -q -t ed25519 -N '' -C linux-gui -f "$state/host/ssh_host_ed25519_key"
+install -d -m 0755 /run/sshd
+
+exec /usr/sbin/sshd -D -e \
+  -o "HostKey=$state/host/ssh_host_ed25519_key" \
+  -o "AuthorizedKeysFile=$state/authorized_keys" \
+  -o "Port=${LINUX_GUI_SSH_PORT:-22}" \
+  -o AllowUsers=abc \
+  -o PasswordAuthentication=no \
+  -o KbdInteractiveAuthentication=no \
+  -o PermitRootLogin=no \
+  -o AllowTcpForwarding=no \
+  -o X11Forwarding=no \
+  -o AllowAgentForwarding=no \
+  -o PermitTunnel=no \
+  -o "SetEnv=DISPLAY=:1"

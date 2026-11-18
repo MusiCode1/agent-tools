@@ -3,6 +3,13 @@ set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 load_env
 require_container
+if is_ssh; then
+  gui_exec curl -fksS -o /dev/null "https://127.0.0.1:${LINUX_GUI_PORT:-6080}/"
+  gui_exec google-chrome --version
+  gui_exec playwright-cli --version
+  echo "linux-gui is healthy (ssh: $LINUX_GUI_SSH_HOST)"
+  exit 0
+fi
 health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' linux-gui)
 [[ "$health" == healthy ]] || die "Container health: $health"
 curl -ksS "https://127.0.0.1:${LINUX_GUI_PORT:-6080}/" >/dev/null

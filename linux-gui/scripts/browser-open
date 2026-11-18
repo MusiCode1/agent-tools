@@ -22,7 +22,7 @@ while (($#)); do
   shift
 done
 [[ -n "$mode" ]] || die "Choose exactly one of --manual or --cdp"
-[[ -d "$LINUX_GUI_BROWSER_PROFILES/$name" ]] || die "Profile does not exist: $name"
+profile_exists "$name" || die "Profile does not exist: $name"
 profile_is_running "$name" && die "Profile is already open: $name"
 require_container
-docker exec --user abc linux-gui linux-gui-browser-launch "$name" "$mode" "$url"
+gui_exec linux-gui-browser-launch "$name" "$mode" "$url"
