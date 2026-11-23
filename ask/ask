@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """ask — חיפוש אחד בכל מאגרי הידע, עם בלוק הקשר סביב המילה.
 
-מקורות: knowledge (~/.recoll) · sessions (agent-sessions DB) · diary (~/.recoll-diary).
-🛑 diary לעולם אינו בברירת-מחדל — ראו agents-config .../rules/80-text-search.md.
+מקורות: knowledge (~/.recoll) · sessions (agent-sessions DB) · comms (comms-index DB) · diary (~/.recoll-diary).
+🛑 diary ו-comms לעולם אינם בברירת-מחדל — ראו agents-config .../rules/80-text-search.md.
 """
 import argparse, html, json, os, re, sqlite3, sys, time
 
@@ -11,9 +11,18 @@ CONF_KNOW = os.path.join(HOME, ".recoll")
 CONF_DIARY = os.path.join(HOME, ".recoll-diary")
 CFG = os.path.join(HOME, ".config/agent-sessions/config.json")
 DB_DEFAULT = os.path.join(HOME, ".local/state/agent-sessions/sessions.db")
-SOURCES = ("knowledge", "sessions", "diary")
+CFG_COMMS = os.path.join(HOME, ".config/comms-index/config.json")
+DB_COMMS_DEFAULT = os.path.join(HOME, ".local/state/comms-index/comms.db")
+SOURCES = ("knowledge", "sessions", "comms", "diary")
+PRIVATE = ("comms", "diary")         # 🔒 מפורש בלבד
 HL_OPEN, HL_CLOSE = "«", "»"
 SCAN_STEPS = (40, 200, 800)          # סריקה הדרגתית: rust דורש 400+, codeshark די לו ב-40
+COMMS_SCAN_STEPS = (40, 200, 1000, 5000)
+CHANNELS = {"wa": "wa", "whatsapp": "wa", "sms": "sms"}
+HEB = "\u05d0-\u05ea"
+WORDCH = "\\w\u0590-\u05ff"          # אות לצורך גבול-מילה, כולל ניקוד וטעמים
+HEB_PREFIX = "[ובהלמשכ]{0,3}"        # ו/ה/ב/ל/מ/ש/כ נצמדות למילה, גם בצירופים (וכש, שב, מה)
+FTS_OPS = {"AND", "OR", "NOT", "NEAR"}
 
 
 class _Quiet:
@@ -50,10 +59,69 @@ def sessions_db():
     return DB_DEFAULT
 
 
-def word_re(term):
-    """גבול-מילה שמכבד עברית: \\b של פייתון אינו מטפל ב-U+0590..U+05FF."""
-    core = "|".join(re.escape(t) for t in term.split() if t) or re.escape(term)
-    return re.compile(rf"(?<![\w֐-׿])(?:{core})(?![\w֐-׿])", re.I)
+def term_parts(term):
+    """מונח → חלקים לסינון. ביטוי במרכאות הוא חלק אחד; כל מילה אחרת חלק משלה.
+
+    🛑 תחביר FTS (מרכאות, סוגריים, AND/OR/NOT) אינו טקסט: גרסה קודמת חיפשה את תו
+    המרכאה עצמו, ו-'"worktree prune"' השאיר 5 תוצאות מתוך 674.
+    """
+    parts = [p.split() for p in re.findall(r'"([^"]*)"', term) if p.split()]
+    rest = re.sub(r'"[^"]*"', " ", term).replace('"', " ")
+    parts += [[w] for w in (t.strip("()") for t in rest.split()) if w and w not in FTS_OPS]
+    return parts
+
+
+def part_re(words, whole_word=True):
+    """חלק → regex. מילה שלמה, ולפני מילה עברית מותרות תחיליות.
+
+    🔑 בעברית ו/ה/ב/ל/מ/ש/כ נצמדות למילה: "פגישה" צריך למצוא גם "בפגישה". גבול-מילה
+    קשיח זרק אותן — נמדד: ‏29 מתוך 40 תוצאות על "פגישה" נעלמו. כוכבית בסוף = בלי
+    גבול מימין. whole_word=False: רצף התווים בלבד, למרכוז הקטע.
+    """
+    star = words[-1].endswith("*")
+    words = [w.strip("*") for w in words if w.strip("*")]
+    if not words:
+        return None
+    body = r"\s+".join(re.escape(w) for w in words)
+    if not whole_word:
+        return re.compile(body, re.I)
+    lead = HEB_PREFIX if re.match(f"[{HEB}]", words[0]) else ""
+    tail = "" if star else f"(?![{WORDCH}])"
+    return re.compile(f"(?<![{WORDCH}]){lead}{body}{tail}", re.I)
+
+
+def word_filter(term, need_all):
+    """פרדיקט מילה-שלמה. need_all: כל החלקים בטקסט (הודעה שלמה); אחרת די באחד —
+    קטע מתוך שיחה ארוכה אינו מכיל בהכרח את כל המילים."""
+    regs = [r for r in (part_re(p) for p in term_parts(term)) if r]
+    if not regs:
+        return None
+    if not need_all or re.search(r"\b(OR|NOT)\b", term):
+        return lambda text: any(r.search(text) for r in regs)
+    return lambda text: all(r.search(text) for r in regs)
+
+
+def window(text, regs, ctx):
+    """קטע של ctx מילים מכל צד סביב ההתאמה הראשונה."""
+    flat = " ".join(text.split())
+    m = next((m for m in (r.search(flat) for r in regs) if m), None)
+    if not m:
+        words = flat.split()
+        return " ".join(words[:ctx * 2]) + (" …" if len(words) > ctx * 2 else "")
+    s, e = m.start(), m.end()
+    for _ in range(ctx):
+        k = flat.rfind(" ", 0, max(s - 1, 0))
+        if k < 0:
+            s = 0
+            break
+        s = k + 1
+    for _ in range(ctx):
+        k = flat.find(" ", e + 1)
+        if k < 0:
+            e = len(flat)
+            break
+        e = k
+    return ("… " if s > 0 else "") + flat[s:e] + (" …" if e < len(flat) else "")
 
 
 def clean(text):
@@ -142,14 +210,14 @@ def search_sessions(term, limit, ctx, filters, whole_word):
                         "join sessions s on s.session_id=m.session_id "
                         f"where {' and '.join(where)} limit {CAP_COUNT})", params).fetchone()[0]
     total_capped = total >= CAP_COUNT
-    rx = word_re(term) if whole_word else None
+    ok = word_filter(term, need_all=False) if whole_word else None
     hits, scanned = [], 0
     for cap in SCAN_STEPS:                       # הדרגתי: מונח נפוץ משלם רק מה שצריך
         rows = con.execute(sql, params + [cap]).fetchall()
         hits, scanned = [], len(rows)
         for sid, role, proj, cli, ts, title, cwd, snip in rows:
             txt = clean(snip or "")
-            if rx and not rx.search(txt):
+            if ok and not ok(txt):
                 continue
             hits.append({"session": sid, "short": short_sid(sid), "role": role, "project": proj, "cli": cli,
                          "title": title, "cwd": cwd,
@@ -167,6 +235,159 @@ def short_sid(sid):
     tail = sid.rsplit("/", 1)[-1]
     m = re.search(r"([0-9a-f]{8})(?:[-_][0-9a-f]{4}){0,3}", tail)
     return m.group(1) if m else tail[:12]
+
+
+# ── comms: הודעות אישיות (comms-index) ──────────────────────────────────────
+
+def comms_db():
+    """נתיב ה-DB מהקונפיג של comms-index — הסכמה שייכת לו, ask קורא בלבד."""
+    try:
+        with open(CFG_COMMS, encoding="utf-8") as f:
+            p = json.load(f).get("db_path")
+        if p:
+            return os.path.expanduser(p)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        die(f"קונפיג comms-index פגום ({CFG_COMMS}): {e}")
+    return DB_COMMS_DEFAULT
+
+
+def comms_fts(term, parts):
+    """trigram הוא התאמת תת-מחרוזת, ולכן כל חלק נשלח כרצף. תחביר בוליאני עובר כמו שהוא."""
+    if re.search(r"\b(OR|NOT|NEAR)\b", term):
+        return fts_query(term)
+    return " ".join('"' + " ".join(w.strip("*") for w in p).replace('"', '""') + '"' for p in parts)
+
+
+def search_comms(term, limit, ctx, filters, whole_word):
+    db = comms_db()
+    if not os.path.exists(db):
+        return {"source": "comms", "total": 0, "hits": [],
+                "error": f"אין אינדקס הודעות ב-{db} — להריץ comms-index update"}
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    parts = term_parts(term)
+    if not parts:
+        die("מונח ריק")
+    where, params = [], []
+    if all(len(" ".join(p).replace("*", "")) >= 3 for p in parts):
+        where.append("m.id in (select rowid from messages_fts where messages_fts match ?)")
+        params.append(comms_fts(term, parts))
+    else:
+        # 🛑 trigram אינו מוצא מחרוזת קצרה משלושה תווים — אפס תוצאות, בלי שגיאה.
+        # ההודעות קצרות, וסריקה ישירה של כולן מהירה מספיק.
+        for p in parts:
+            where.append("m.text like ?")
+            params.append(f"%{' '.join(w.strip('*') for w in p)}%")
+    if filters.get("channel"):
+        chans = sorted({CHANNELS.get(c.strip().lower(), c.strip().lower())
+                        for c in filters["channel"].split(",") if c.strip()})
+        where.append(f"m.source in ({','.join('?' * len(chans))})")
+        params += chans
+    if filters.get("chat"):
+        where.append("(m.conv_name like ? or m.sender like ?)")
+        params += [f"%{filters['chat']}%"] * 2
+    if filters.get("since"):
+        where.append("m.ts >= ?")
+        params.append(int(time.mktime(time.strptime(filters["since"], "%Y-%m-%d"))))
+    cond = " and ".join(where)
+    CAP_COUNT = 10000
+    try:
+        total = con.execute(f"select count(*) from (select 1 from messages m where {cond} limit {CAP_COUNT})",
+                            params).fetchone()[0]
+    except sqlite3.OperationalError as e:
+        return {"source": "comms", "total": 0, "hits": [], "error": f"שאילתה לא תקינה: {e}"}
+    ok = word_filter(term, need_all=True) if whole_word else None
+    regs = [r for r in (part_re(p, whole_word) for p in parts) if r]
+    sql = ("select m.ref, m.source, m.account, m.conv_name, m.sender, m.from_me, m.ts, m.text "
+           f"from messages m where {cond} order by m.ts desc, m.id desc limit ?")
+    hits, scanned = [], 0
+    for cap in COMMS_SCAN_STEPS:
+        rows = con.execute(sql, params + [cap]).fetchall()
+        hits, scanned = [], len(rows)
+        for ref, src, acct, conv, sender, from_me, ts, text in rows:
+            if ok and not ok(text):
+                continue
+            hits.append({"ref": ref, "channel": src, "account": acct, "conv": conv, "sender": sender,
+                         "from_me": bool(from_me), "ts": ts, "text": window(text, regs, ctx)})
+            if len(hits) >= limit:
+                break
+        if len(hits) >= limit or scanned < cap:
+            break
+    return {"source": "comms", "total": total, "capped": total >= CAP_COUNT, "hits": hits, "scanned": scanned}
+
+
+def comms_lags(db):
+    """אזהרות התיישנות: ווטסאפ אמור להתעדכן כל כמה דקות, ארכיון ה-SMS כל רבע שעה."""
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        rows = con.execute("select source, account, key, value from state").fetchall()
+    except sqlite3.Error:
+        return []
+    st = {}
+    for s, a, k, v in rows:
+        st.setdefault((s, a), {})[k] = v
+    now, out = time.time(), []
+
+    def age(key, kv):
+        try:
+            v = float(kv.get(key) or 0)
+        except ValueError:
+            v = 0
+        return (now - v) / 3600 if v else None
+
+    for (s, a), kv in sorted(st.items()):
+        upd = age("last_update", kv)
+        if s == "wa" and (upd is None or upd > 1):
+            out.append(f"wa/{a} " + ("לא עודכן אף פעם" if upd is None else f"לא עודכן {upd:.0f} שעות"))
+        if s == "sms":
+            pulled, ran = age("last_pull_ok", kv), age("phone_last_run", kv)
+            if pulled is None or pulled > 24:
+                out.append(f"sms/{a}: העותק מהטלפון " +
+                           ("לא נמשך אף פעם" if pulled is None else f"בן {pulled:.0f} שעות"))
+            elif ran is None or ran > 24:
+                out.append(f"sms/{a}: הארכיון בטלפון " +
+                           ("לא רץ אף פעם" if ran is None else f"לא רץ {ran:.0f} שעות"))
+    return out
+
+
+def show_msg(ref, around, jsonout):
+    """ask msg <ref> — ההודעה וההודעות שסביבה באותה שיחה."""
+    if not re.fullmatch(r"[0-9a-fA-F]{4,40}", ref):
+        die(f"מזהה הודעה לא תקין: {ref!r}")
+    db = comms_db()
+    if not os.path.exists(db):
+        die(f"אין אינדקס הודעות ב-{db}")
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    rows = con.execute("select id, source, account, conv_id, conv_name, ts from messages where ref like ?",
+                       (ref.lower() + "%",)).fetchall()
+    if not rows:
+        die(f"אין הודעה התואמת {ref!r}")
+    if len(rows) > 1:
+        print(f"{len(rows)} הודעות תואמות — להאריך את המזהה", file=sys.stderr)
+        sys.exit(2)
+    mid, src, acct, conv_id, conv, ts = rows[0]
+    cols = "id, ref, sender, from_me, ts, text"
+    same = "source=? and account=? and conv_id=?"
+    before = con.execute(f"select {cols} from messages where {same} and (ts < ? or (ts = ? and id < ?)) "
+                         "order by ts desc, id desc limit ?", (src, acct, conv_id, ts, ts, mid, around)).fetchall()
+    target = con.execute(f"select {cols} from messages where id=?", (mid,)).fetchone()
+    after = con.execute(f"select {cols} from messages where {same} and (ts > ? or (ts = ? and id > ?)) "
+                        "order by ts, id limit ?", (src, acct, conv_id, ts, ts, mid, around)).fetchall()
+    msgs = before[::-1] + [target] + after
+    if jsonout:
+        print(json.dumps({"conversation": {"channel": src, "account": acct, "id": conv_id, "name": conv},
+                          "messages": [{"ref": r[1], "sender": r[2], "from_me": bool(r[3]), "ts": r[4],
+                                        "text": r[5], "match": r[0] == mid} for r in msgs]}, ensure_ascii=False))
+        return
+    print(f"# {conv} · {src}/{acct}")
+    print("─" * 60)
+    for r in msgs:
+        who = "אני" if r[3] else (r[2] or conv)
+        lines = (r[5] or "").splitlines() or [""]
+        print(f"{'▶' if r[0] == mid else ' '} {fmt_dt(r[4])}  {who}: {lines[0]}")
+        for ln in lines[1:]:
+            print(f"{' ' * 18}{ln}")
 
 
 def index_lag(confdir):
@@ -239,18 +460,22 @@ def fmt_ts(ms):
     return time.strftime("%d/%m", time.localtime(ms / 1000)) if ms else "?"
 
 
-def render(term, results, used, ctx, jsonout, lags=()):
+def fmt_dt(sec):
+    """בהודעות השנה חשובה — הארכיון מגיע שנים אחורה."""
+    return time.strftime("%d/%m/%y %H:%M", time.localtime(sec)) if sec else "?"
+
+
+def render(term, results, used, ctx, jsonout, warnings=()):
     if jsonout:
         print(json.dumps({"term": term, "sources": used, "context": ctx,
-                          "results": results}, ensure_ascii=False))
+                          "results": results, "warnings": list(warnings)}, ensure_ascii=False))
         return
     counts = " · ".join(f"{r['source']} {r['total']:,}{'+' if r.get('capped') else ''}"
                         for r in results)
-    marks = " · ".join(("🔒 " if s == "diary" else "") + s for s in used)
+    marks = " · ".join(("🔒 " if s in PRIVATE else "") + s for s in used)
     print(f"{term} · {counts}    [מקורות: {marks} · ctx={ctx}]")
-    for lag_src, lag_h in lags:
-        print(f"⚠️  אינדקס {lag_src} לא עודכן {lag_h:.0f} שעות — "
-              f"אחרי שינוי מבנה נדרש recollindex מלא")
+    for w in warnings:
+        print(f"⚠️  {w}")
     for r in results:
         if r.get("error"):
             print(f"\n⚠️  {r['source']}: {r['error']}")
@@ -261,7 +486,13 @@ def render(term, results, used, ctx, jsonout, lags=()):
             continue
         print(f"\n── {r['source']} ──")
         for h in r["hits"]:
-            if r["source"] == "sessions":
+            if r["source"] == "comms":
+                who = "אני" if h["from_me"] else h["sender"]
+                head = " · ".join(x for x in (fmt_dt(h["ts"]), h["channel"], h["conv"],
+                                              who if who != h["conv"] else "") if x)
+                print(f"  {head}{' ' * 4}ask msg {h['ref']}")
+                print(f"     {h['text'][:240]}")
+            elif r["source"] == "sessions":
                 print(f"  {fmt_ts(h['ts'])} · {h['project']} · {h['cli']}"
                       f"{' ' * 4}ask session {h['short']}")
                 print(f"     {h['text'][:240]}")
@@ -290,20 +521,32 @@ def main():
         sp.add_argument("--json", action="store_true")
         a = sp.parse_args(sys.argv[2:])
         return show_session(a.id, a.json)
+    if len(sys.argv) > 2 and sys.argv[1] == "msg" and (not sys.argv[2].startswith("-") or sys.argv[2] == "--"):
+        sp = argparse.ArgumentParser(prog="ask msg", description="🔒 הודעה מהאינדקס, עם ההודעות שסביבה בשיחה")
+        sp.add_argument("ref", help="מזהה מפלט החיפוש (ask msg <ref>)")
+        sp.add_argument("--around", type=int, default=8, metavar="N", help="הודעות לפני ואחרי (8)")
+        sp.add_argument("--json", action="store_true")
+        a = sp.parse_args(sys.argv[2:])
+        return show_msg(a.ref, max(0, a.around), a.json)
     if len(sys.argv) > 1 and sys.argv[1] == "--":
         sys.argv.pop(1)
 
     p = argparse.ArgumentParser(
         prog="ask", add_help=True,
         description="חיפוש אחד בכל מאגרי הידע, עם בלוק הקשר סביב המילה.",
-        epilog="ברירת מחדל: knowledge + sessions. diary דורש --diary במפורש.  "
-               "תת-פקודה: ask session <id> — קריאת סשן מלא (מקבל גם קיצור).  "
-               "לחיפוש המילה session עצמה: ask -- session")
+        epilog="ברירת מחדל: knowledge + sessions. ‏diary ו-comms רק במפורש (--diary, --comms).  "
+               "תת-פקודות: ask session <id> — קריאת סשן מלא (מקבל גם קיצור) · "
+               "ask msg <ref> — הודעה וההודעות שסביבה.  "
+               "לחיפוש המילה session או msg עצמה: ask -- session")
     p.add_argument("term", help="מונח חיפוש. מרכאות כפולות = ביטוי מדויק.")
     p.add_argument("--knowledge", action="store_true", help="ויקי, נהלים וקוד (~/.recoll)")
     p.add_argument("--sessions", action="store_true", help="ארכיון שיחות הסוכנים")
+    p.add_argument("--comms", action="store_true",
+                   help="🔒 הודעות אישיות (ווטסאפ, SMS) — מפורש בלבד. מה שמודפס נכנס לארכיון השיחות")
     p.add_argument("--diary", action="store_true", help="🔒 יומן וכספת אישית — מפורש בלבד")
-    p.add_argument("--src", metavar="A,B", help="בורר כללי: knowledge,sessions,diary")
+    p.add_argument("--src", metavar="A,B", help="בורר כללי: knowledge,sessions,comms,diary")
+    p.add_argument("--channel", metavar="C", help="בהודעות: wa,sms")
+    p.add_argument("--chat", metavar="X", help="בהודעות: חלק משם השיחה או השולח")
     p.add_argument("-n", "--limit", type=int, default=8, metavar="N", help="תוצאות לכל מקור (8)")
     p.add_argument("--context", type=int, default=12, metavar="W",
                    help="מילות הקשר סביב המילה (12). 4≈50 תווים · 30≈500. "
@@ -318,7 +561,7 @@ def main():
     args = p.parse_args()          # 🛑 argparse נכשל על דגל לא-מוכר — ולא בולע אותו בשקט
 
     used = [s for s, on in (("knowledge", args.knowledge), ("sessions", args.sessions),
-                            ("diary", args.diary)) if on]
+                            ("comms", args.comms), ("diary", args.diary)) if on]
     if args.src:
         for s in (x.strip() for x in args.src.split(",") if x.strip()):
             if s not in SOURCES:
@@ -326,7 +569,7 @@ def main():
             if s not in used:
                 used.append(s)
     if not used:
-        used = ["knowledge", "sessions"]          # diary לעולם לא כאן
+        used = ["knowledge", "sessions"]          # diary ו-comms לעולם לא כאן
 
     ctx = max(1, args.context)
     results = []
@@ -335,18 +578,24 @@ def main():
             results.append(search_recoll(CONF_KNOW, args.term, args.limit, ctx, "knowledge", args.stem))
         elif s == "diary":
             results.append(search_recoll(CONF_DIARY, args.term, args.limit, ctx, "diary", args.stem))
+        elif s == "comms":
+            results.append(search_comms(args.term, args.limit, ctx,
+                                        {"channel": args.channel, "chat": args.chat, "since": args.since},
+                                        not args.no_word))
         else:
             results.append(search_sessions(args.term, args.limit, ctx,
                                            {"project": args.project, "cli": args.cli,
                                             "role": args.role, "since": args.since},
                                            not args.no_word))
-    lags = []
+    warnings = []
     for s_name, conf in (("knowledge", CONF_KNOW), ("diary", CONF_DIARY)):
         if s_name in used:
             h = index_lag(conf)
             if h:
-                lags.append((s_name, h))
-    render(args.term, results, used, ctx, args.json, lags)
+                warnings.append(f"אינדקס {s_name} לא עודכן {h:.0f} שעות — אחרי שינוי מבנה נדרש recollindex מלא")
+    if "comms" in used:
+        warnings += [f"comms: {w}" for w in comms_lags(comms_db())]
+    render(args.term, results, used, ctx, args.json, warnings)
 
 
 if __name__ == "__main__":
