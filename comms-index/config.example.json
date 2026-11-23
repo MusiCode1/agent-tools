@@ -1,0 +1,15 @@
+{
+  "db_path": "~/.local/state/comms-index/comms.db",
+  "whatsapp": [
+    {"account": "personal", "db": "~/.local/state/wacli/accounts/<account>/wacli.db"}
+  ],
+  "sms": {
+    "account": "phone",
+    "pull_interval_min": 15,
+    "job_id": 4701,
+    "routes": [
+      {"type": "ssh", "host": "<phone-address>", "port": 8022, "user": "<termux-user>", "key": "~/.ssh/<key>", "connect_timeout": 8},
+      {"type": "adb", "serial": "<phone-address>:<adb-port>", "server_port": 5041}
+    ]
+  }
+}

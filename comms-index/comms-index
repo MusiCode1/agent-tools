@@ -1,0 +1,657 @@
+#!/usr/bin/env python3
+"""comms-index — אינדקס חיפוש מקומי להודעות אישיות: ווטסאפ (מ-wacli) ו-SMS (מארכיון על הטלפון).
+
+הכלי כותב את ה-DB; ‏`ask --comms` קורא אותו בלבד. ‏🔒 החיפוש בהודעות הוא מפורש בלבד:
+כל מה שסוכן קורא נכנס לארכיון השיחות, שנסרק כברירת מחדל.
+
+קונפיג: ~/.config/comms-index/config.json (ראו config.example.json). ‏README באותה תיקייה.
+"""
+import argparse, fcntl, hashlib, json, os, re, shlex, sqlite3, subprocess, sys, tempfile, time
+
+HOME = os.path.expanduser("~")
+CFG_PATH = os.environ.get("COMMS_INDEX_CONFIG") or os.path.join(HOME, ".config/comms-index/config.json")
+DEFAULT_DB = os.path.join(HOME, ".local/state/comms-index/comms.db")
+HERE = os.path.dirname(os.path.realpath(__file__))
+SCHEMA_VERSION = 1
+
+# צד הטלפון: Termux. ‏run-as מתחיל ב-/data/data/com.termux, ולכן הנתיבים שם יחסיים.
+# 🛑 בלי LD_LIBRARY_PATH: הוא גורם ל-/system/bin/app_process (ש-rish מריץ) לטעון את
+#    liblzma של Termux ולהיכשל ב-"cannot locate symbol". ‏Termux עצמו אינו מגדיר אותו.
+TERMUX_PREFIX = "/data/data/com.termux/files/usr"
+TERMUX_HOME = "/data/data/com.termux/files/home"
+TERMUX_ENV = (f"export PREFIX={TERMUX_PREFIX} HOME={TERMUX_HOME} PATH={TERMUX_PREFIX}/bin "
+              f"TMPDIR={TERMUX_PREFIX}/tmp")
+PHONE_DIR = "sms-archive"                    # יחסי ל-$HOME של Termux
+PHONE_FILES = ("sms-archive.py", "run.sh")
+SNAPSHOT = f"{PHONE_DIR}/sms.snapshot.db"
+FROM_ME_TYPES = {"sent", "outbox", "queued", "failed"}
+
+SCHEMA = """
+create table if not exists meta(key text primary key, value text);
+create table if not exists state(source text not null, account text not null, key text not null, value text,
+                                 primary key (source, account, key));
+create table if not exists messages(
+  id integer primary key,
+  ref text not null unique,
+  source text not null,
+  account text not null,
+  ext_id text not null,
+  conv_id text not null,
+  conv_name text not null default '',
+  sender text not null default '',
+  from_me integer not null default 0,
+  ts integer not null,
+  text text not null,
+  sig text not null
+);
+create unique index if not exists messages_ext on messages(source, account, ext_id);
+create index if not exists messages_conv on messages(source, account, conv_id, ts);
+create index if not exists messages_ts on messages(ts);
+create virtual table if not exists messages_fts using fts5(
+  text, content='messages', content_rowid='id', tokenize='trigram');
+create trigger if not exists messages_ai after insert on messages begin
+  insert into messages_fts(rowid, text) values (new.id, new.text);
+end;
+create trigger if not exists messages_ad after delete on messages begin
+  insert into messages_fts(messages_fts, rowid, text) values ('delete', old.id, old.text);
+end;
+create trigger if not exists messages_au after update of text on messages begin
+  insert into messages_fts(messages_fts, rowid, text) values ('delete', old.id, old.text);
+  insert into messages_fts(rowid, text) values (new.id, new.text);
+end;
+"""
+
+
+class SourceError(Exception):
+    """מקור שלא נקרא כראוי. האינדקס של המקור נשאר כמו שהוא."""
+
+
+class ShrinkError(Exception):
+    """עדכון שהיה מוחק חלק גדול מהאינדקס — כמעט תמיד מקור תקול, לא מחיקות אמיתיות."""
+
+
+class PullError(Exception):
+    pass
+
+
+def die(msg, code=2):
+    print(f"comms-index: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def note(msg, quiet=False):
+    if not quiet:
+        print(msg)
+
+
+# ── קונפיג ───────────────────────────────────────────────────────────────
+
+def load_config():
+    try:
+        with open(CFG_PATH, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except FileNotFoundError:
+        cfg = {}
+    except Exception as e:
+        die(f"קונפיג פגום ({CFG_PATH}): {e}")
+    cfg["db_path"] = os.path.expanduser(cfg.get("db_path") or DEFAULT_DB)
+    wa = cfg.get("whatsapp") or []
+    for a in wa:
+        if not a.get("account") or not a.get("db"):
+            die(f"ב-whatsapp חסר account או db: {a}")
+        a["db"] = os.path.expanduser(a["db"])
+    cfg["whatsapp"] = wa
+    sms = cfg.get("sms")
+    if sms:
+        sms.setdefault("account", "phone")
+        sms.setdefault("pull_interval_min", 15)
+        sms["local_copy"] = os.path.expanduser(sms.get("local_copy") or
+                                               os.path.join(os.path.dirname(cfg["db_path"]), "sms-archive.db"))
+        sms.setdefault("routes", [])
+        sms.setdefault("job_id", 4701)
+        for r in sms["routes"]:
+            if r.get("type") not in ("ssh", "adb"):
+                die(f"נתיב לא מוכר ב-sms.routes: {r}")
+            if r.get("key"):
+                r["key"] = os.path.expanduser(r["key"])
+    return cfg
+
+
+# ── DB ───────────────────────────────────────────────────────────────────
+
+def open_db(path):
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    con = sqlite3.connect(path, timeout=30)
+    con.execute("pragma journal_mode=wal")
+    con.execute("pragma busy_timeout=30000")
+    con.executescript(SCHEMA)
+    row = con.execute("select value from meta where key='schema_version'").fetchone()
+    if row is None:
+        con.execute("insert into meta(key, value) values ('schema_version', ?)", (str(SCHEMA_VERSION),))
+        con.commit()
+    elif int(row[0]) != SCHEMA_VERSION:
+        die(f"גרסת סכמה {row[0]} במקום {SCHEMA_VERSION}: להריץ comms-index rebuild")
+    return con
+
+
+def take_lock(db_path):
+    """ריצה אחת בכל פעם. טיימר שחופף לריצה ידנית מדלג — זה תקין, לא תקלה."""
+    os.makedirs(os.path.dirname(db_path), mode=0o700, exist_ok=True)
+    fd = os.open(db_path + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("comms-index: ריצה אחרת פעילה — דילוג", file=sys.stderr)
+        sys.exit(0)
+    return fd
+
+
+def state_get(con, source, account):
+    return dict(con.execute("select key, value from state where source=? and account=?", (source, account)))
+
+
+def state_set(con, source, account, **kv):
+    con.executemany("insert into state(source, account, key, value) values (?,?,?,?) "
+                    "on conflict(source, account, key) do update set value=excluded.value",
+                    [(source, account, k, "" if v is None else str(v)) for k, v in kv.items()])
+
+
+def ref_of(source, account, ext_id, n=12):
+    return hashlib.sha1(f"{source}|{account}|{ext_id}".encode()).hexdigest()[:n]
+
+
+def sig_of(*fields):
+    return hashlib.sha1("\x1f".join(str(f) for f in fields).encode()).hexdigest()
+
+
+def sync_rows(con, source, account, rows, allow_shrink=False):
+    """מיישר את האינדקס של מקור אחד מול התמונה המלאה שלו.
+
+    rows: (ext_id, conv_id, conv_name, sender, from_me, ts, text). ‏הודעה שלא חזרה
+    נמחקת מהאינדקס; ההשוואה לפי חתימה, ולכן עריכה, מחיקה ושינוי שם נקלטים בלי
+    לסמוך על חותמות-זמן של המקור. מחזיר (נוספו, עודכנו, נמחקו, סה"כ).
+    """
+    existing = {ext: (rid, sig) for rid, ext, sig in con.execute(
+        "select id, ext_id, sig from messages where source=? and account=?", (source, account))}
+    seen, ins, upd = set(), 0, 0
+    for ext_id, conv_id, conv_name, sender, from_me, ts, text in rows:
+        if ext_id in seen:
+            continue
+        seen.add(ext_id)
+        sig = sig_of(conv_id, conv_name, sender, int(bool(from_me)), int(ts), text)
+        old = existing.get(ext_id)
+        if old is None:
+            vals = (source, account, ext_id, conv_id, conv_name, sender, int(bool(from_me)), int(ts), text, sig)
+            try:
+                con.execute("insert into messages(ref, source, account, ext_id, conv_id, conv_name, sender, "
+                            "from_me, ts, text, sig) values (?,?,?,?,?,?,?,?,?,?,?)",
+                            (ref_of(source, account, ext_id),) + vals)
+            except sqlite3.IntegrityError:
+                # התנגשות ב-12 תווים — נדירה מאוד; מאריכים במקום להיכשל
+                con.execute("insert into messages(ref, source, account, ext_id, conv_id, conv_name, sender, "
+                            "from_me, ts, text, sig) values (?,?,?,?,?,?,?,?,?,?,?)",
+                            (ref_of(source, account, ext_id, 20),) + vals)
+            ins += 1
+        elif old[1] != sig:
+            con.execute("update messages set conv_id=?, conv_name=?, sender=?, from_me=?, ts=?, text=?, sig=? "
+                        "where id=?", (conv_id, conv_name, sender, int(bool(from_me)), int(ts), text, sig, old[0]))
+            upd += 1
+    gone = [existing[e][0] for e in existing.keys() - seen]
+    limit = max(100, len(existing) // 10)
+    if gone and not allow_shrink and (len(gone) > limit or not seen):
+        con.rollback()
+        raise ShrinkError(f"{source}/{account}: העדכון היה מוחק {len(gone):,} הודעות מהאינדקס "
+                          f"(הסף {limit:,}). לא בוצע. אם זה מכוון: --allow-shrink")
+    con.executemany("delete from messages where id=?", ((g,) for g in gone))
+    return ins, upd, len(gone), len(seen)
+
+
+# ── ווטסאפ (wacli) ───────────────────────────────────────────────────────
+
+def jid_user(jid):
+    return (jid or "").split("@", 1)[0].split(":", 1)[0]
+
+
+def wa_rows(db_path):
+    """כל ההודעות שיש בהן טקסט, כפי שהמשתמש רואה אותן.
+
+    לא נכנסות: הודעות שנמחקו (revoked / deleted_for_me), תגובות, ושורות שה-
+    display_text שלהן הוא תבנית ("(message)", ‏"Reacted…", ‏"Sent…"). ציטוט
+    בתשובה אינו נכנס — הוא כבר באינדקס כהודעה המקורית.
+    """
+    if not os.path.exists(db_path):
+        raise SourceError(f"אין DB של wacli ב-{db_path}")
+    try:
+        src = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
+        src.execute("pragma busy_timeout=30000")
+        names = {}
+        for jid, *cands in src.execute("select jid, full_name, business_name, first_name, push_name from contacts"):
+            name = next((c.strip() for c in cands if c and c.strip()), "")
+            if name:
+                names[jid] = name
+        for jid, alias in src.execute("select jid, alias from contact_aliases"):
+            if alias and alias.strip():
+                names[jid] = alias.strip()
+        chats = {jid: name.strip() for jid, name in src.execute("select jid, coalesce(name,'') from chats")
+                 if name.strip()}
+        rows = src.execute(
+            "select chat_jid, msg_id, coalesce(chat_name,''), coalesce(sender_jid,''), coalesce(sender_name,''), "
+            "ts, from_me, coalesce(text,''), coalesce(media_caption,''), coalesce(filename,''), "
+            "revoked, deleted_for_me from messages").fetchall()
+    except sqlite3.Error as e:
+        raise SourceError(f"קריאת {db_path} נכשלה ({e}) — ייתכן ש-wacli שינה סכמה") from e
+    out = []
+    for chat_jid, msg_id, chat_name, sender_jid, sender_name, ts, from_me, text, caption, filename, \
+            revoked, deleted in rows:
+        if revoked or deleted:
+            continue
+        text, caption, filename = text.strip(), caption.strip(), filename.strip()
+        parts = [p for p in (text, caption if caption != text else "", filename) if p]
+        if not parts:
+            continue
+        conv = chats.get(chat_jid) or names.get(chat_jid) or chat_name.strip() or jid_user(chat_jid)
+        if from_me:
+            sender = ""
+        elif sender_jid == chat_jid or not sender_jid:
+            sender = conv
+        else:
+            sender = (chats.get(sender_jid) or names.get(sender_jid) or sender_name.strip()
+                      or jid_user(sender_jid))
+        out.append((f"{chat_jid}/{msg_id}", chat_jid, conv, sender, from_me, ts, "\n".join(parts)))
+    return out
+
+
+# ── SMS: ארכיון מהטלפון ──────────────────────────────────────────────────
+
+def norm_number(s):
+    """מספר טלפון → צורה להשוואה. ‏+972/972 → 0. שולח אלפאנומרי (שם בנק) נשאר כמו שהוא."""
+    s = (s or "").strip()
+    digits = re.sub(r"\D", "", s)
+    if len(digits) < 5 or re.search(r"[^\d\s+()\-.]", s):
+        return s.lower()
+    if digits.startswith("972"):
+        digits = "0" + digits[3:]
+    return digits
+
+
+def sms_rows(archive_path):
+    if not os.path.exists(archive_path):
+        raise SourceError(f"אין עותק מקומי של ארכיון ה-SMS ב-{archive_path} — להריץ pull-sms")
+    try:
+        src = sqlite3.connect(f"file:{archive_path}?mode=ro", uri=True)
+        contacts = {}
+        for number, name in src.execute("select number, name from contacts"):
+            if name and name.strip():
+                contacts.setdefault(norm_number(number), name.strip())
+        rows = src.execute("select id, received, ts, thread_id, coalesce(type,''), coalesce(address,''), "
+                           "coalesce(body,'') from sms").fetchall()
+    except sqlite3.Error as e:
+        raise SourceError(f"קריאת {archive_path} נכשלה ({e})") from e
+    out = []
+    for rid, received, ts, thread_id, typ, address, body in rows:
+        body = body.strip()
+        if not body:
+            continue
+        name = contacts.get(norm_number(address)) or address
+        from_me = typ in FROM_ME_TYPES
+        conv_id = str(thread_id) if thread_id is not None else norm_number(address)
+        out.append((f"{rid}:{received}", conv_id, name, "" if from_me else name, from_me, ts, body))
+    return out
+
+
+def snapshot_info(path):
+    """בדיקת קובץ שהגיע מהטלפון, לפני שהוא מחליף את העותק הקיים."""
+    with open(path, "rb") as f:
+        if f.read(16) != b"SQLite format 3\x00":
+            raise PullError("הקובץ שהתקבל אינו SQLite")
+    try:
+        c = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        if c.execute("pragma quick_check").fetchone()[0] != "ok":
+            raise PullError("quick_check נכשל על העותק")
+        n = c.execute("select count(*) from sms").fetchone()[0]
+        meta = dict(c.execute("select key, value from meta"))
+        c.close()
+    except sqlite3.Error as e:
+        raise PullError(f"העותק אינו ארכיון תקין: {e}") from e
+    return n, meta
+
+
+class Adb:
+    """שרת adb ייעודי בפורט משלו: להרוג אותו בסוף לא פוגע בסשן adb של מישהו אחר."""
+
+    def __init__(self, route):
+        self.serial = route["serial"]
+        self.package = route.get("package", "com.termux")
+        self.env = {**os.environ, "ANDROID_ADB_SERVER_PORT": str(route.get("server_port", 5041))}
+
+    def run(self, *args, timeout=120, **kw):
+        return subprocess.run(["adb", *args], env=self.env, timeout=timeout, **kw)
+
+    def __enter__(self):
+        out = self.run("connect", self.serial, timeout=25, capture_output=True, text=True)
+        text = (out.stdout or "") + (out.stderr or "")
+        if "connected to" not in text:
+            self.close()
+            raise PullError(f"adb connect {self.serial}: {text.strip()[:160] or out.returncode}")
+        return self
+
+    def close(self):
+        for args in (("disconnect", self.serial), ("kill-server",)):
+            try:
+                self.run(*args, timeout=15, capture_output=True)
+            except Exception:
+                pass
+
+    def __exit__(self, *a):
+        self.close()
+        return False
+
+    def termux_sh(self, script, timeout=300, stdin=None):
+        # run-as מתחיל בתיקיית האפליקציה ולא ב-$HOME — הנתיבים היחסיים מניחים $HOME
+        cmd = f"run-as {self.package} sh -c {shlex.quote(f'{TERMUX_ENV}; cd {TERMUX_HOME} && {script}')}"
+        return self.run("-s", self.serial, "shell", cmd, timeout=timeout, capture_output=True,
+                        stdin=subprocess.DEVNULL if stdin is None else stdin, text=stdin is None)
+
+    def cat(self, rel_path, dest, timeout=300):
+        with open(dest, "wb") as f:
+            out = self.run("-s", self.serial, "exec-out", "run-as", self.package, "cat", f"files/home/{rel_path}",
+                           timeout=timeout, stdout=f, stderr=subprocess.PIPE)
+        if out.returncode != 0:
+            raise PullError(f"adb cat: rc={out.returncode} {out.stderr.decode(errors='replace').strip()[:160]}")
+
+
+def ssh_cmd(route):
+    cmd = ["ssh", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=accept-new",
+           "-o", f"ConnectTimeout={route.get('connect_timeout', 10)}", "-p", str(route.get("port", 8022))]
+    if route.get("key"):
+        cmd += ["-i", route["key"]]
+    if route.get("jump"):
+        cmd += ["-J", route["jump"]]
+    return cmd + [f"{route.get('user', 'termux')}@{route['host']}"]
+
+
+def route_label(route):
+    return f"{route['type']}:{route.get('host') or route.get('serial')}"
+
+
+def phone_exec(route, script, timeout=300, stdin=None):
+    """פקודת shell בתוך Termux. ‏stdin: קובץ פתוח להעלאה, או None."""
+    if route["type"] == "ssh":
+        out = subprocess.run(ssh_cmd(route) + [script], timeout=timeout, capture_output=True,
+                             stdin=subprocess.DEVNULL if stdin is None else stdin, text=stdin is None)
+    else:
+        with Adb(route) as adb:
+            out = adb.termux_sh(script, timeout=timeout, stdin=stdin)
+    so, se = out.stdout, out.stderr
+    if isinstance(so, bytes):
+        so, se = so.decode(errors="replace"), se.decode(errors="replace")
+    return out.returncode, so, se
+
+
+def phone_fetch(route, dest):
+    if route["type"] == "ssh":
+        with open(dest, "wb") as f:
+            out = subprocess.run(ssh_cmd(route) + [f"cat {SNAPSHOT}"], timeout=300, stdout=f,
+                                 stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
+        if out.returncode != 0:
+            raise PullError(f"rc={out.returncode} {out.stderr.decode(errors='replace').strip()[:160]}")
+    else:
+        with Adb(route) as adb:
+            adb.cat(SNAPSHOT, dest)
+
+
+def pull_sms(cfg, con, force=False, refresh=False, allow_shrink=False, quiet=False):
+    """מושך את העותק העקבי מהטלפון. כשל בכל הנתיבים אינו מוחק את העותק הקיים."""
+    sms = cfg["sms"]
+    acct = sms["account"]
+    st = state_get(con, "sms", acct)
+    now = int(time.time())
+    if not force and now - int(float(st.get("last_pull_attempt") or 0)) < sms["pull_interval_min"] * 60:
+        return "skip"
+    state_set(con, "sms", acct, last_pull_attempt=now)
+    con.commit()
+    os.makedirs(os.path.dirname(sms["local_copy"]), mode=0o700, exist_ok=True)
+    errors = []
+    for route in sms["routes"]:
+        tmp = None
+        try:
+            if refresh:
+                rc, so, se = phone_exec(route, f"python3 {PHONE_DIR}/sms-archive.py run", timeout=600)
+                if rc != 0:
+                    raise PullError(f"הרצת הארכיון בטלפון נכשלה: rc={rc} {(se or so).strip()[-200:]}")
+            fd, tmp = tempfile.mkstemp(prefix=".sms-pull-", dir=os.path.dirname(sms["local_copy"]))
+            os.close(fd)
+            phone_fetch(route, tmp)
+            n, meta = snapshot_info(tmp)
+            prev = int(st.get("archive_rows") or 0)
+            if n < prev and not allow_shrink:
+                raise PullError(f"הארכיון בטלפון קטן מהעותק הקודם ({n:,} < {prev:,}) — לא הוחלף")
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, sms["local_copy"])
+            tmp = None
+            state_set(con, "sms", acct, last_pull_ok=now, last_pull_route=route_label(route), last_pull_error="",
+                      archive_rows=n, phone_last_run=meta.get("last_run", ""),
+                      phone_last_error=meta.get("last_error", ""),
+                      phone_warning=meta.get("no_address_error", ""))
+            con.commit()
+            note(f"sms/{acct}: נמשך דרך {route_label(route)} · {n:,} הודעות בארכיון", quiet)
+            return "ok"
+        except (PullError, OSError, subprocess.SubprocessError) as e:
+            errors.append(f"{route_label(route)}: {e}")
+        finally:
+            if tmp and os.path.exists(tmp):
+                os.remove(tmp)
+    state_set(con, "sms", acct, last_pull_error=" · ".join(errors) or "אין נתיבים בקונפיג")
+    con.commit()
+    raise PullError(" · ".join(errors) or "אין נתיבים ב-sms.routes")
+
+
+# ── פקודות ───────────────────────────────────────────────────────────────
+
+def update_wa(cfg, con, allow_shrink, quiet):
+    ok = True
+    for a in cfg["whatsapp"]:
+        t0 = time.time()
+        try:
+            rows = wa_rows(a["db"])
+            ins, upd, dele, total = sync_rows(con, "wa", a["account"], rows, allow_shrink)
+        except (SourceError, ShrinkError) as e:
+            print(f"comms-index: {e}", file=sys.stderr)
+            ok = False
+            continue
+        state_set(con, "wa", a["account"], last_update=int(time.time()), rows=total)
+        con.commit()
+        note(f"wa/{a['account']}: {total:,} הודעות · +{ins} ~{upd} -{dele} · {time.time() - t0:.1f}s", quiet)
+    return ok
+
+
+def update_sms(cfg, con, args):
+    sms = cfg.get("sms")
+    if not sms:
+        return True
+    acct = sms["account"]
+    ok = True
+    if not args.no_pull:
+        try:
+            pull_sms(cfg, con, force=args.force_pull or args.refresh, refresh=args.refresh,
+                     allow_shrink=args.allow_shrink, quiet=args.quiet)
+        except PullError as e:
+            print(f"comms-index: משיכת SMS נכשלה בכל הנתיבים: {e}", file=sys.stderr)
+            ok = False
+    if not os.path.exists(sms["local_copy"]):
+        return ok
+    st = state_get(con, "sms", acct)
+    mtime = str(os.stat(sms["local_copy"]).st_mtime_ns)
+    if st.get("imported_mtime") == mtime and not args.force_import:
+        return ok
+    try:
+        ins, upd, dele, total = sync_rows(con, "sms", acct, sms_rows(sms["local_copy"]), args.allow_shrink)
+    except (SourceError, ShrinkError) as e:
+        print(f"comms-index: {e}", file=sys.stderr)
+        return False
+    state_set(con, "sms", acct, last_update=int(time.time()), rows=total, imported_mtime=mtime)
+    con.commit()
+    note(f"sms/{acct}: {total:,} הודעות · +{ins} ~{upd} -{dele}", args.quiet)
+    return ok
+
+
+def cmd_update(cfg, args):
+    take_lock(cfg["db_path"])
+    con = open_db(cfg["db_path"])
+    ok = True
+    if args.source in ("all", "wa"):
+        ok &= update_wa(cfg, con, args.allow_shrink, args.quiet)
+    if args.source in ("all", "sms"):
+        ok &= update_sms(cfg, con, args)
+    return 0 if ok else 1
+
+
+def cmd_pull(cfg, args):
+    if not cfg.get("sms"):
+        die("אין sms בקונפיג")
+    take_lock(cfg["db_path"])
+    con = open_db(cfg["db_path"])
+    try:
+        pull_sms(cfg, con, force=True, refresh=args.refresh, allow_shrink=args.allow_shrink)
+    except PullError as e:
+        die(f"משיכת SMS נכשלה: {e}", 1)
+    return 0
+
+
+def fmt_age(ts):
+    if not ts:
+        return "אף פעם"
+    s = time.time() - float(ts)
+    if s < 120:
+        return f"לפני {s:.0f} שניות"
+    if s < 7200:
+        return f"לפני {s / 60:.0f} דקות"
+    if s < 172800:
+        return f"לפני {s / 3600:.1f} שעות"
+    return f"לפני {s / 86400:.1f} ימים"
+
+
+def cmd_status(cfg, args):
+    if not os.path.exists(cfg["db_path"]):
+        die(f"אין אינדקס ב-{cfg['db_path']} — להריץ comms-index update", 1)
+    con = sqlite3.connect(f"file:{cfg['db_path']}?mode=ro", uri=True)
+    counts = {(s, a): n for s, a, n in con.execute(
+        "select source, account, count(*) from messages group by source, account")}
+    states = {}
+    for s, a, k, v in con.execute("select source, account, key, value from state"):
+        states.setdefault((s, a), {})[k] = v
+    keys = sorted(set(counts) | set(states))
+    if args.json:
+        print(json.dumps({"db": cfg["db_path"], "sources": [
+            {"source": s, "account": a, "messages": counts.get((s, a), 0), **states.get((s, a), {})}
+            for s, a in keys]}, ensure_ascii=False))
+        return 0
+    print(f"אינדקס: {cfg['db_path']}")
+    for s, a in keys:
+        st = states.get((s, a), {})
+        print(f"  {s}/{a}: {counts.get((s, a), 0):,} הודעות · עודכן {fmt_age(st.get('last_update'))}")
+        if s == "sms":
+            print(f"     משיכה אחרונה: {fmt_age(st.get('last_pull_ok'))} ({st.get('last_pull_route') or '—'})"
+                  f" · ריצת ארכיון בטלפון: {fmt_age(st.get('phone_last_run'))}")
+            if st.get("last_pull_error"):
+                print(f"     ⚠️  כשל משיכה אחרון: {st['last_pull_error'][:300]}")
+            if st.get("phone_last_error"):
+                print(f"     ⚠️  שגיאה אחרונה בטלפון: {st['phone_last_error'][:300]}")
+            if st.get("phone_warning"):
+                print(f"     ⚠️  הודעות בלי כתובת שולח לא נקראו: {st['phone_warning'][:300]}")
+    return 0
+
+
+def cmd_rebuild(cfg, args):
+    """בונה מחדש מהמקורות המקומיים. לא מושך מהטלפון."""
+    take_lock(cfg["db_path"])
+    for suffix in ("", "-wal", "-shm"):
+        p = cfg["db_path"] + suffix
+        if os.path.exists(p):
+            os.remove(p)
+    con = open_db(cfg["db_path"])
+    ok = update_wa(cfg, con, True, args.quiet)
+    if cfg.get("sms"):
+        args.no_pull, args.force_import, args.allow_shrink = True, True, True
+        ok &= update_sms(cfg, con, args)
+    return 0 if ok else 1
+
+
+def pick_route(cfg, wanted=None):
+    routes = cfg["sms"]["routes"]
+    if wanted:
+        routes = [r for r in routes if r["type"] == wanted]
+    for r in routes:
+        try:
+            rc, so, _ = phone_exec(r, "echo ok", timeout=40)
+        except (PullError, OSError, subprocess.SubprocessError):
+            continue
+        if rc == 0 and "ok" in so:
+            return r
+    die("אין נתיב פעיל לטלפון (sms.routes)", 1)
+
+
+def cmd_sms_install(cfg, args):
+    """מתקין את צד הטלפון: מעלה את הסקריפט, מריץ סריקה מלאה, ורושם משימה מתוזמנת."""
+    if not cfg.get("sms"):
+        die("אין sms בקונפיג")
+    route = pick_route(cfg, args.route)
+    print(f"נתיב: {route_label(route)}")
+    rc, so, se = phone_exec(route, f"mkdir -p {PHONE_DIR} && chmod 700 {PHONE_DIR}")
+    if rc != 0:
+        die(f"יצירת {PHONE_DIR} נכשלה: {se or so}", 1)
+    for name in PHONE_FILES:
+        dst = f"{PHONE_DIR}/{name}"
+        with open(os.path.join(HERE, "phone", name), "rb") as f:
+            rc, so, se = phone_exec(route, f"cat > {dst}.tmp && chmod 700 {dst}.tmp && mv {dst}.tmp {dst}", stdin=f)
+        if rc != 0:
+            die(f"העלאת {name} נכשלה: {se or so}", 1)
+        print(f"  הועלה {dst}")
+    rc, so, se = phone_exec(route, f"python3 {PHONE_DIR}/sms-archive.py run --full", timeout=1200)
+    if rc != 0:
+        die(f"הריצה הראשונה נכשלה: {(se or so).strip()[-400:]}", 1)
+    rc, so, _ = phone_exec(route, f"python3 {PHONE_DIR}/sms-archive.py status")
+    print(f"  ארכיון: {so.strip()}")
+    if args.no_job:
+        return 0
+    job = cfg["sms"]["job_id"]
+    rc, so, se = phone_exec(route, (
+        f"termux-job-scheduler --job-id {job} --period-ms 900000 --persisted true --network none "
+        f"--script {TERMUX_HOME}/{PHONE_DIR}/run.sh && termux-job-scheduler -p"))
+    if rc != 0:
+        die(f"רישום המשימה נכשל: {(se or so).strip()}", 1)
+    print(f"  משימה {job}: {' '.join(so.split())[:300]}")
+    return 0
+
+
+def main():
+    os.umask(0o077)
+    p = argparse.ArgumentParser(prog="comms-index",
+                                description="אינדקס חיפוש מקומי להודעות אישיות (ווטסאפ, SMS) עבור ask --comms")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    u = sub.add_parser("update", help="עדכון האינדקס מהמקורות (ברירת המחדל של הטיימר)")
+    u.add_argument("--source", choices=("all", "wa", "sms"), default="all")
+    u.add_argument("--force-pull", action="store_true", help="למשוך מהטלפון גם לפני תום המרווח")
+    u.add_argument("--refresh", action="store_true", help="להריץ את הארכיון בטלפון לפני המשיכה")
+    u.add_argument("--no-pull", action="store_true", help="לייבא רק מהעותק המקומי")
+    u.add_argument("--force-import", action="store_true", help="לייבא את העותק המקומי גם אם לא השתנה")
+    u.add_argument("--allow-shrink", action="store_true", help="לאשר מחיקה גדולה מהאינדקס")
+    u.add_argument("-q", "--quiet", action="store_true")
+    pl = sub.add_parser("pull-sms", help="משיכת ארכיון ה-SMS מהטלפון עכשיו")
+    pl.add_argument("--refresh", action="store_true", help="להריץ את הארכיון בטלפון לפני המשיכה")
+    pl.add_argument("--allow-shrink", action="store_true")
+    s = sub.add_parser("status", help="מצב המקורות והעדכון האחרון")
+    s.add_argument("--json", action="store_true")
+    r = sub.add_parser("rebuild", help="בנייה מחדש מהמקורות המקומיים")
+    r.add_argument("-q", "--quiet", action="store_true")
+    i = sub.add_parser("sms-install", help="התקנת הארכיון בטלפון ורישום משימה מתוזמנת")
+    i.add_argument("--route", choices=("ssh", "adb"))
+    i.add_argument("--no-job", action="store_true", help="בלי רישום משימה")
+    args = p.parse_args()
+    cfg = load_config()
+    return {"update": cmd_update, "pull-sms": cmd_pull, "status": cmd_status,
+            "rebuild": cmd_rebuild, "sms-install": cmd_sms_install}[args.cmd](cfg, args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,13 @@
+# עדכון אינדקס ההודעות: ווטסאפ בכל ריצה, SMS לפי pull_interval_min שבקונפיג.
+# ריצה בלי שינוי עולה פחות משנייה. כשל משיכה מהטלפון אינו מוחק את העותק הקיים.
+[Unit]
+Description=Update the local messages search index (comms-index)
+Documentation=https://github.com/MusiCode1/agent-tools/tree/main/comms-index
+
+[Service]
+Type=oneshot
+TimeoutStartSec=15min
+Nice=10
+# adb מותקן לרוב ב-~/.local/bin, שאינו ב-PATH של systemd — בלעדיו משיכת ה-SMS נכשלת בשקט
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/comms-index update --quiet

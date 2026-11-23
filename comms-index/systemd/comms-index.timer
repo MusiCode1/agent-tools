@@ -1,0 +1,12 @@
+# כל 5 דקות. משיכת ה-SMS מהטלפון מוגבלת בנפרד (pull_interval_min).
+[Unit]
+Description=Update the messages search index every 5 minutes
+Documentation=https://github.com/MusiCode1/agent-tools/tree/main/comms-index
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
