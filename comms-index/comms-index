@@ -101,6 +101,12 @@ def load_config():
             die(f"ב-whatsapp חסר account או db: {a}")
         a["db"] = os.path.expanduser(a["db"])
     cfg["whatsapp"] = wa
+    rcs = cfg.get("rcs")
+    if rcs:
+        if not rcs.get("db"):
+            die("ב-rcs חסר db")
+        rcs.setdefault("account", "google")
+        rcs["db"] = os.path.expanduser(rcs["db"])
     sms = cfg.get("sms")
     if sms:
         sms.setdefault("account", "phone")
@@ -258,6 +264,68 @@ def wa_rows(db_path):
             sender = (chats.get(sender_jid) or names.get(sender_jid) or sender_name.strip()
                       or jid_user(sender_jid))
         out.append((f"{chat_jid}/{msg_id}", chat_jid, conv, sender, from_me, ts, "\n".join(parts)))
+    return out
+
+
+# ── RCS: Google Messages דרך gmcli ─────────────────────────────────────
+
+def body_key(text):
+    return hashlib.sha1(" ".join((text or "").split()).encode()).hexdigest()
+
+
+def sms_index(archive_path):
+    """גוף → זמנים, מארכיון ה-SMS. בשביל לדלג ב-rcs על מה שכבר הגיע משם."""
+    idx = {}
+    if archive_path and os.path.exists(archive_path):
+        src = sqlite3.connect(f"file:{archive_path}?mode=ro", uri=True)
+        for ts, body in src.execute("select ts, coalesce(body,'') from sms"):
+            idx.setdefault(body_key(body), []).append(ts)
+        src.close()
+    return idx
+
+
+def gm_rows(db_path, sms_archive=None, window=120):
+    """הודעות Google Messages מ-gmcli שאינן בארכיון ה-SMS — בפועל RCS ו-MMS.
+
+    Messages for Web מחזיר גם SMS. ה-SMS מגיע מהארכיון שבטלפון (שומר גם מחוקות),
+    ולכן כאן נכנס רק מה שאין לו התאמה שם: אותו גוף, בהפרש של עד שתי דקות.
+    """
+    if not os.path.exists(db_path):
+        raise SourceError(f"אין DB של gmcli ב-{db_path}")
+    idx = sms_index(sms_archive)
+    try:
+        src = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
+        src.execute("pragma busy_timeout=30000")
+        people = {}
+        for pid, name, e164, fmt in src.execute(
+                "select participant_id, coalesce(name,''), coalesce(e164,''), coalesce(formatted_number,'') from contacts"):
+            people[pid] = name.strip() or fmt or e164
+        convs = {}
+        for cid, name, parts in src.execute(
+                "select conversation_id, coalesce(name,''), coalesce(participants_json,'[]') from conversations"):
+            label = name.strip()
+            if not label:
+                try:
+                    label = ", ".join(p.get("name") or p.get("formatted_number") or p.get("e164") or ""
+                                      for p in json.loads(parts) if not p.get("is_me"))
+                except ValueError:
+                    label = ""
+            convs[cid] = label or cid
+        rows = src.execute("select message_id, conversation_id, coalesce(sender_id,''), coalesce(body,''), "
+                           "timestamp_ms, is_from_me from messages").fetchall()
+    except sqlite3.Error as e:
+        raise SourceError(f"קריאת {db_path} נכשלה ({e}) — ייתכן ש-gmcli שינה סכמה") from e
+    out = []
+    for mid, cid, sender_id, body, ms, from_me in rows:
+        body = body.strip()
+        if not body or not ms:
+            continue
+        ts = int(ms) // 1000
+        if any(abs(ts - t) <= window for t in idx.get(body_key(body), ())):
+            continue
+        conv = convs.get(cid, cid)
+        sender = "" if from_me else (people.get(sender_id) or conv)
+        out.append((str(mid), str(cid), conv, sender, bool(from_me), ts, body))
     return out
 
 
@@ -465,6 +533,23 @@ def update_wa(cfg, con, allow_shrink, quiet):
     return ok
 
 
+def update_rcs(cfg, con, allow_shrink, quiet):
+    rcs = cfg.get("rcs")
+    if not rcs:
+        return True
+    t0 = time.time()
+    archive = (cfg.get("sms") or {}).get("local_copy")
+    try:
+        ins, upd, dele, total = sync_rows(con, "rcs", rcs["account"], gm_rows(rcs["db"], archive), allow_shrink)
+    except (SourceError, ShrinkError) as e:
+        print(f"comms-index: {e}", file=sys.stderr)
+        return False
+    state_set(con, "rcs", rcs["account"], last_update=int(time.time()), rows=total)
+    con.commit()
+    note(f"rcs/{rcs['account']}: {total:,} הודעות · +{ins} ~{upd} -{dele} · {time.time() - t0:.1f}s", quiet)
+    return True
+
+
 def update_sms(cfg, con, args):
     sms = cfg.get("sms")
     if not sms:
@@ -503,6 +588,8 @@ def cmd_update(cfg, args):
         ok &= update_wa(cfg, con, args.allow_shrink, args.quiet)
     if args.source in ("all", "sms"):
         ok &= update_sms(cfg, con, args)
+    if args.source in ("all", "rcs"):           # אחרי sms: הסינון נשען על העותק העדכני
+        ok &= update_rcs(cfg, con, args.allow_shrink, args.quiet)
     return 0 if ok else 1
 
 
@@ -574,6 +661,7 @@ def cmd_rebuild(cfg, args):
     if cfg.get("sms"):
         args.no_pull, args.force_import, args.allow_shrink = True, True, True
         ok &= update_sms(cfg, con, args)
+    ok &= update_rcs(cfg, con, True, args.quiet)
     return 0 if ok else 1
 
 
@@ -630,7 +718,7 @@ def main():
                                 description="אינדקס חיפוש מקומי להודעות אישיות (ווטסאפ, SMS) עבור ask --comms")
     sub = p.add_subparsers(dest="cmd", required=True)
     u = sub.add_parser("update", help="עדכון האינדקס מהמקורות (ברירת המחדל של הטיימר)")
-    u.add_argument("--source", choices=("all", "wa", "sms"), default="all")
+    u.add_argument("--source", choices=("all", "wa", "sms", "rcs"), default="all")
     u.add_argument("--force-pull", action="store_true", help="למשוך מהטלפון גם לפני תום המרווח")
     u.add_argument("--refresh", action="store_true", help="להריץ את הארכיון בטלפון לפני המשיכה")
     u.add_argument("--no-pull", action="store_true", help="לייבא רק מהעותק המקומי")

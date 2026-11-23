@@ -1,9 +1,9 @@
 # comms-index
 
-אינדקס חיפוש מקומי להודעות אישיות, ווטסאפ ו־SMS, עבור `ask --comms`.
+אינדקס חיפוש מקומי להודעות אישיות, ווטסאפ, SMS ו־RCS, עבור `ask --comms`.
 
 ```
-comms-index update [--source all|wa|sms] [--force-pull] [--refresh] [--no-pull] [--allow-shrink]
+comms-index update [--source all|wa|sms|rcs] [--force-pull] [--refresh] [--no-pull] [--allow-shrink]
 comms-index pull-sms [--refresh]        # משיכת ארכיון ה-SMS מהטלפון עכשיו
 comms-index status [--json]
 comms-index rebuild                     # בנייה מחדש מהמקורות המקומיים, בלי משיכה
@@ -14,6 +14,7 @@ comms-index sms-install [--route ssh|adb] [--no-job]
 
 ```
 wacli.db (SQLite, מסונכרן חי) ────────────┐
+gmcli.db (Google Messages, RCS) ──────────┤
                                           ├─► comms.db (FTS5 trigram) ─► ask --comms · ask msg <ref>
 טלפון: sms.db ─► sms.snapshot.db ─(ssh/adb)┘
 ```
@@ -40,6 +41,26 @@ wacli.db (SQLite, מסונכרן חי) ────────────┐
   רק תבנית (`(message)`, ‏`Reacted…`). ציטוט בתשובה אינו נכנס, כי ההודעה המקורית כבר
   באינדקס.
 - **שם השיחה והשולח:** שם השיחה, כינוי, שם מלא או שם עסק, ואז push name.
+
+## RCS: Google Messages דרך `gmcli`
+
+הודעות RCS אינן נשמרות במאגר ה־SMS של Android, ולכן אינן בארכיון שבטלפון. הן
+מגיעות מ־[`gmcli`](https://github.com/fdsouvenir/gmcli), שמדבר בפרוטוקול של
+Messages for Web ושומר ב־SQLite. ‏`comms-index` קורא את ה־DB שלו לקריאה בלבד.
+
+- **בלי כפילויות:** ‏Messages for Web מחזיר גם SMS. לכן נכנסות רק הודעות שאין להן
+  התאמה בארכיון ה־SMS: אותו גוף, בהפרש של עד שתי דקות. בפועל אלה RCS ו־MMS.
+- **צימוד:** חשבון Google עם אישור אימוג'י בטלפון. אפשר להעביר את ה־cookies של
+  פרופיל דפדפן מחובר דרך `gmcli auth --cookies-file -`, בצינור ובלי קובץ.
+- **שירות:** ‏`systemd/gmcli-sync.service` מריץ `gmcli --read-only sync --follow`.
+  Google מנתקת צימוד אחרי כ־14 ימים בלי פעילות. קוד יציאה 3 פירושו התנתקות מהחשבון,
+  והשירות לא מופעל מחדש במקרה כזה.
+- **היסטוריה:** ‏`gmcli history backfill --chat <id>` לכל שיחה.
+
+⚠️ ‏`gmcli` v1.3.0 בנוי על libgm `v0.2608.0`. גרסאות Google Messages מסוף 2026 דוחות
+את הצימוד שלו בשגיאה `unknown error pairing: 3/32` (`CLIENT_ATTESTATION_MISSING`,
+[mautrix/gmessages#91](https://github.com/mautrix/gmessages/issues/91)). בנייה מחדש
+מול libgm `v0.2611.0`, עם התאמות קטנות ל־API, פותרת את זה.
 
 ## SMS: ארכיון על הטלפון
 
@@ -81,8 +102,7 @@ wacli.db (SQLite, מסונכרן חי) ────────────┐
 
 ### מה לא נכנס
 
-- **‏RCS:** הודעות RCS (למשל ב־Google Messages) אינן נשמרות ב־`content://sms`, ולכן גם
-  לא בארכיון.
+- **‏RCS:** אינן ב־`content://sms`, ולכן לא בארכיון. הן מגיעות מ־`gmcli` (למעלה).
 - **‏MMS:** לא בשלב הזה.
 
 ## פרטיות
@@ -100,8 +120,8 @@ install -d -m 700 ~/.config/comms-index
 install -m 600 config.example.json ~/.config/comms-index/config.json   # ולמלא
 comms-index update --source wa
 comms-index sms-install                # העלאה לטלפון, סריקה מלאה ורישום משימה
-cp systemd/comms-index.service systemd/comms-index.timer ~/.config/systemd/user/
-systemctl --user daemon-reload && systemctl --user enable --now comms-index.timer
+cp systemd/comms-index.service systemd/comms-index.timer systemd/gmcli-sync.service ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now comms-index.timer gmcli-sync.service
 ```
 
 הטיימר רץ כל 5 דקות. ווטסאפ מתעדכן בכל ריצה, ו־SMS לפי `pull_interval_min`.

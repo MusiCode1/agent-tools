@@ -198,6 +198,42 @@ class SmsImportTest(unittest.TestCase):
         self.assertEqual(st["archive_rows"], "4")
 
 
+class RcsSourceTest(unittest.TestCase):
+    def test_gm_rows_skip_messages_already_in_sms_archive(self):
+        with tempfile.TemporaryDirectory(prefix="comms-index-rcs-") as d:
+            d = Path(d)
+            make_archive(d / "archive.db", [(1, "2026-01-01 10:00:00", 1767254400, 7, "inbox", 1,
+                                             "0500000001", "התור שלך נקבע")], [])
+            con = sqlite3.connect(d / "gmcli.db")
+            con.executescript("""
+              create table contacts (participant_id text, source_platform text, contact_id text, name text,
+                                     e164 text, formatted_number text, avatar_color text, is_me integer, updated_at integer);
+              create table conversations (conversation_id text, source_platform text, name text, is_group integer,
+                                          participants_json text, last_message_ts integer, unread integer,
+                                          pinned integer, archived integer, updated_at integer);
+              create table messages (message_id text, conversation_id text, source_platform text, sender_id text,
+                                     body text, timestamp_ms integer, status integer, is_from_me integer,
+                                     media_id text, mime_type text, decryption_key blob, reactions_json text,
+                                     reply_to_id text, raw_proto blob, updated_at integer);""")
+            con.execute("insert into contacts(participant_id, name, e164) values ('p1', 'דנה', '+972500000001')")
+            con.execute("insert into conversations(conversation_id, name, participants_json) values "
+                        "('c1', '', '[{\"id\": \"p1\", \"name\": \"דנה\", \"is_me\": false}]')")
+            con.executemany("insert into messages(message_id, conversation_id, sender_id, body, timestamp_ms, "
+                            "is_from_me) values (?,?,?,?,?,?)", [
+                ("m1", "c1", "p1", "התור שלך נקבע", 1767254400 * 1000 + 30_000, 0),   # כבר ב-SMS
+                ("m2", "c1", "p1", "הודעת RCS חדשה", 1767254500 * 1000, 0),
+                ("m3", "c1", "", "תשובה שלי", 1767254600 * 1000, 1),
+                ("m4", "c1", "p1", "", 1767254700 * 1000, 0),
+            ])
+            con.commit()
+            con.close()
+            rows = {r[0]: r for r in ci.gm_rows(str(d / "gmcli.db"), str(d / "archive.db"))}
+            self.assertEqual(set(rows), {"m2", "m3"})
+            self.assertEqual(rows["m2"][1:5], ("c1", "דנה", "דנה", False))
+            self.assertEqual(rows["m3"][3:5], ("", True))
+            self.assertEqual(len(ci.gm_rows(str(d / "gmcli.db"))), 3, "בלי ארכיון — אין סינון")
+
+
 FAKE_SMS_LIST = textwrap.dedent("""\
     #!/usr/bin/env python3
     import json, os, sys

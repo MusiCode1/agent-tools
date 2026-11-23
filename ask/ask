@@ -18,7 +18,7 @@ PRIVATE = ("comms", "diary")         # 🔒 מפורש בלבד
 HL_OPEN, HL_CLOSE = "«", "»"
 SCAN_STEPS = (40, 200, 800)          # סריקה הדרגתית: rust דורש 400+, codeshark די לו ב-40
 COMMS_SCAN_STEPS = (40, 200, 1000, 5000)
-CHANNELS = {"wa": "wa", "whatsapp": "wa", "sms": "sms"}
+CHANNELS = {"wa": "wa", "whatsapp": "wa", "sms": "sms", "rcs": "rcs", "gm": "rcs"}
 HEB = "\u05d0-\u05ea"
 WORDCH = "\\w\u0590-\u05ff"          # אות לצורך גבול-מילה, כולל ניקוד וטעמים
 HEB_PREFIX = "[ובהלמשכ]{0,3}"        # ו/ה/ב/ל/מ/ש/כ נצמדות למילה, גם בצירופים (וכש, שב, מה)
@@ -318,7 +318,7 @@ def search_comms(term, limit, ctx, filters, whole_word):
 
 
 def comms_lags(db):
-    """אזהרות התיישנות: ווטסאפ אמור להתעדכן כל כמה דקות, ארכיון ה-SMS כל רבע שעה."""
+    """אזהרות התיישנות: ווטסאפ ו-RCS אמורים להתעדכן כל כמה דקות, ארכיון ה-SMS כל רבע שעה."""
     try:
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         rows = con.execute("select source, account, key, value from state").fetchall()
@@ -338,8 +338,8 @@ def comms_lags(db):
 
     for (s, a), kv in sorted(st.items()):
         upd = age("last_update", kv)
-        if s == "wa" and (upd is None or upd > 1):
-            out.append(f"wa/{a} " + ("לא עודכן אף פעם" if upd is None else f"לא עודכן {upd:.0f} שעות"))
+        if s in ("wa", "rcs") and (upd is None or upd > 1):
+            out.append(f"{s}/{a} " + ("לא עודכן אף פעם" if upd is None else f"לא עודכן {upd:.0f} שעות"))
         if s == "sms":
             pulled, ran = age("last_pull_ok", kv), age("phone_last_run", kv)
             if pulled is None or pulled > 24:
@@ -542,10 +542,10 @@ def main():
     p.add_argument("--knowledge", action="store_true", help="ויקי, נהלים וקוד (~/.recoll)")
     p.add_argument("--sessions", action="store_true", help="ארכיון שיחות הסוכנים")
     p.add_argument("--comms", action="store_true",
-                   help="🔒 הודעות אישיות (ווטסאפ, SMS) — מפורש בלבד. מה שמודפס נכנס לארכיון השיחות")
+                   help="🔒 הודעות אישיות (ווטסאפ, SMS, RCS) — מפורש בלבד. מה שמודפס נכנס לארכיון השיחות")
     p.add_argument("--diary", action="store_true", help="🔒 יומן וכספת אישית — מפורש בלבד")
     p.add_argument("--src", metavar="A,B", help="בורר כללי: knowledge,sessions,comms,diary")
-    p.add_argument("--channel", metavar="C", help="בהודעות: wa,sms")
+    p.add_argument("--channel", metavar="C", help="בהודעות: wa,sms,rcs")
     p.add_argument("--chat", metavar="X", help="בהודעות: חלק משם השיחה או השולח")
     p.add_argument("-n", "--limit", type=int, default=8, metavar="N", help="תוצאות לכל מקור (8)")
     p.add_argument("--context", type=int, default=12, metavar="W",

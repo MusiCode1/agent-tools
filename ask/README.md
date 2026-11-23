@@ -5,7 +5,7 @@
 ```
 ask "מונח" [--knowledge] [--sessions] [--comms] [--diary] [--src a,b]
            [-n 8] [--context 12] [--project X] [--cli Y] [--role R] [--since D]
-           [--channel wa,sms] [--chat X] [--stem] [--no-word] [--json]
+           [--channel wa,sms,rcs] [--chat X] [--stem] [--no-word] [--json]
 
 ask session <short>              # קיצור מפלט החיפוש
 ask session --json -- <full-id>  # מזהה מלא, גם אם הוא מתחיל במקף; כל שדות ה-DB
@@ -35,14 +35,14 @@ ask msg <ref> [--around 8]       # 🔒 הודעה וההודעות שסביבה
 |---|---|
 | `knowledge` | `~/.recoll` — ויקי, נהלים, קוד |
 | `sessions` | ‏DB של `agent-sessions` (דרך `~/.config/agent-sessions/config.json`) |
-| `comms` | 🔒 ‏DB של [`comms-index`](../comms-index/) — ווטסאפ ו-SMS. **מפורש בלבד** |
+| `comms` | 🔒 ‏DB של [`comms-index`](../comms-index/) — ווטסאפ, SMS ו־RCS. **מפורש בלבד** |
 | `diary` | 🔒 `~/.recoll-diary` — **מפורש בלבד** |
 
 **‏`comms`:** התוצאות ממוינות מהחדשה לישנה, עם תאריך, ערוץ, שיחה ושולח.
 ‏`--channel` מצמצם לערוץ, ו־`--chat` לחלק משם השיחה או השולח. ‏`--since` חל גם כאן.
 מונח קצר משלושה תווים עובר לסריקה ישירה, כי trigram אינו מוצא אותו. הפקודה
 `ask msg <ref>` מציגה את ההודעה ואת ההודעות שסביבה. כשהאינדקס מתיישן מוצגת אזהרה:
-ווטסאפ אחרי שעה, ו־SMS אחרי יום.
+ווטסאפ ו־RCS אחרי שעה, ו־SMS אחרי יום.
 
 ## חמש הכרעות עיצוב, כולן מדודות
 
