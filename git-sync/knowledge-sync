@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Former name of git-sync, kept for existing installations.
+exec "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/git-sync" "$@"

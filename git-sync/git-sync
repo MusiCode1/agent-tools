@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# git-sync — short command for git_sync.py.
+#
+#   git-sync [sync]                    run the profile's mode now
+#   git-sync plan | status             read-only: what would happen / current state
+#   git-sync install <profile.json> [--replace]   install a profile from its repository
+#
+# The profile is $GIT_SYNC_CONFIG, or --config PATH, or
+# ~/.config/knowledge-git-sync/profile.json. Extra flags pass through (--quiet).
+# notes mode: running `sync` by hand is the statement that no editor is writing.
+set -euo pipefail
+
+here=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+config=${GIT_SYNC_CONFIG:-${KNOWLEDGE_SYNC_CONFIG:-$HOME/.config/knowledge-git-sync/profile.json}}
+python=$HOME/.local/share/knowledge-git-sync/venv/bin/python
+[[ -x "$python" ]] || python=python3
+
+command=${1:-sync}
+[[ $# -gt 0 ]] && shift
+if [[ ${1:-} == --config ]]; then config=$2; shift 2; fi
+case "$command" in
+  sync)
+    exec "$python" "$here/git_sync.py" sync --config "$config" --editor-paused "$@" ;;
+  plan|status)
+    exec "$python" "$here/git_sync.py" "$command" --config "$config" "$@" ;;
+  install)
+    exec "$python" "$here/install_profile.py" "$@" --target "$config" ;;
+  -h|--help|help)
+    sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *)
+    echo "git-sync: unknown command '$command' (sync | plan | status | install)" >&2
+    exit 2 ;;
+esac

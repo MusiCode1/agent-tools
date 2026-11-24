@@ -1,0 +1,9 @@
+[project]
+name = "git-sync"
+version = "0.1.0"
+description = "Explicit Git synchronization: notes, read-only mirror, and append-only log modes"
+requires-python = ">=3.11"
+dependencies = ["PyYAML>=6.0.2,<7"]
+
+[tool.uv]
+package = false
