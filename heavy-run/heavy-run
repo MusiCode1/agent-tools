@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# heavy-run — run a heavy command (full test suite, build, measurement, browser
+# probe) through a machine-wide queue, inside a memory-capped systemd scope,
+# with the deployment environment of the calling agent removed.
+#
+# Usage:
+#   heavy-run [options] -- <command> [args...]
+#   heavy-run status
+#
+# Options:
+#   --label NAME      name shown in the queue and in the scope unit (default: first word of the command)
+#   --preview         long-running server: memory cap and clean env, but no queue slot
+#   --no-queue        skip the queue (memory cap and clean env still apply)
+#   --keep-env        do not strip the deployment variables
+#   --mem-high SIZE   systemd MemoryHigh, a soft cap that throttles instead of killing
+#                     (default $HEAVY_RUN_MEM_HIGH or none — a low soft cap can stall a job for minutes)
+#   --mem-max SIZE    systemd MemoryMax  (default $HEAVY_RUN_MEM_MAX or 2G)
+#   --swap-max SIZE   systemd MemorySwapMax (default $HEAVY_RUN_SWAP_MAX or 512M)
+#
+# Environment:
+#   HEAVY_RUN_SLOTS   concurrent heavy jobs (default: nproc/2, at least 1)
+#   HEAVY_RUN_DIR     lock directory (default: $XDG_RUNTIME_DIR/heavy-run)
+#
+# Exit code: the command's exit code; 124 if the queue wait was interrupted.
+set -euo pipefail
+
+STRIP_VARS=(DC_DEPLOYMENT DC_DEPLOYMENT_DIR PORT FE_STATIC_DIR NODE_ENV)
+
+run_dir="${HEAVY_RUN_DIR:-${XDG_RUNTIME_DIR:-/tmp}/heavy-run}"
+mkdir -p "$run_dir"
+
+default_slots() {
+  local n
+  n=$(nproc 2>/dev/null || echo 2)
+  n=$(( n / 2 ))
+  (( n < 1 )) && n=1
+  echo "$n"
+}
+
+slots="${HEAVY_RUN_SLOTS:-$(default_slots)}"
+mem_high="${HEAVY_RUN_MEM_HIGH:-}"
+mem_max="${HEAVY_RUN_MEM_MAX:-2G}"
+swap_max="${HEAVY_RUN_SWAP_MAX:-512M}"
+
+say() { printf 'heavy-run: %s\n' "$*" >&2; }
+
+holder_line() {
+  # Prints "label · pid · cwd · since" for a slot info file, if its pid is alive.
+  local info="$1" pid label cwd since
+  [[ -f "$info" ]] || return 1
+  IFS=$'\t' read -r pid label cwd since < "$info" || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  printf '%s · pid %s · %s · since %s' "$label" "$pid" "$cwd" "$since"
+}
+
+cmd_status() {
+  local i any=0 line
+  echo "slots: $slots  (dir: $run_dir)"
+  for (( i = 0; i < slots; i++ )); do
+    if line=$(holder_line "$run_dir/slot-$i.info"); then
+      echo "slot $i: $line"; any=1
+    else
+      echo "slot $i: free"
+    fi
+  done
+  for f in "$run_dir"/wait-*.info; do
+    [[ -e "$f" ]] || continue
+    if line=$(holder_line "$f"); then echo "waiting: $line"; any=1; fi
+  done
+  (( any )) || true
+}
+
+if [[ "${1:-}" == "status" ]]; then
+  cmd_status
+  exit 0
+fi
+
+label="" queue=1 keep_env=0
+while (( $# )); do
+  case "$1" in
+    --label) label="$2"; shift 2 ;;
+    --preview|--no-queue) queue=0; shift ;;
+    --keep-env) keep_env=1; shift ;;
+    --mem-high) mem_high="$2"; shift 2 ;;
+    --mem-max) mem_max="$2"; shift 2 ;;
+    --swap-max) swap_max="$2"; shift 2 ;;
+    --) shift; break ;;
+    -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) say "unknown option: $1 (put the command after --)"; exit 2 ;;
+  esac
+done
+
+if (( $# == 0 )); then
+  say "no command given. Usage: heavy-run [options] -- <command> [args...]"
+  exit 2
+fi
+
+[[ -n "$label" ]] || label="$(basename -- "$1")"
+safe_label="$(printf '%s' "$label" | tr -c 'A-Za-z0-9_.-' '-' | cut -c1-40)"
+now() { date '+%H:%M:%S'; }
+
+# ── queue ─────────────────────────────────────────────────────────────────────
+slot_fd=""
+wait_info=""
+cleanup() {
+  [[ -n "$wait_info" ]] && rm -f "$wait_info"
+  if [[ -n "$slot_fd" ]]; then
+    rm -f "$run_dir/slot-$slot_idx.info"
+  fi
+}
+trap cleanup EXIT
+trap 'cleanup; exit 124' INT TERM
+
+if (( queue )); then
+  wait_info="$run_dir/wait-$$.info"
+  printf '%s\t%s\t%s\t%s\n' "$$" "$label" "$PWD" "$(now)" > "$wait_info"
+  announced=0 last_note=0 start=$SECONDS
+  while :; do
+    for (( slot_idx = 0; slot_idx < slots; slot_idx++ )); do
+      exec {fd}>>"$run_dir/slot-$slot_idx.lock"
+      if flock -n "$fd"; then
+        slot_fd=$fd
+        break 2
+      fi
+      exec {fd}>&-
+    done
+    if (( ! announced )) || (( SECONDS - last_note >= 60 )); then
+      holders=""
+      for (( i = 0; i < slots; i++ )); do
+        if line=$(holder_line "$run_dir/slot-$i.info"); then holders+=" [$line]"; fi
+      done
+      say "waiting in queue ($(( SECONDS - start ))s) — running now:${holders:- (unknown)}"
+      announced=1 last_note=$SECONDS
+    fi
+    sleep 2
+  done
+  rm -f "$wait_info"; wait_info=""
+  printf '%s\t%s\t%s\t%s\n' "$$" "$label" "$PWD" "$(now)" > "$run_dir/slot-$slot_idx.info"
+  (( announced )) && say "got slot $slot_idx after $(( SECONDS - start ))s"
+fi
+
+# ── environment ───────────────────────────────────────────────────────────────
+env_args=()
+if (( ! keep_env )); then
+  for v in "${STRIP_VARS[@]}"; do env_args+=(-u "$v"); done
+fi
+
+# ── run in a memory-capped scope ──────────────────────────────────────────────
+status=0
+if command -v systemd-run >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+  unit="heavy-run-${safe_label}-$$"
+  props=(-p MemoryMax="$mem_max" -p MemorySwapMax="$swap_max")
+  [[ -n "$mem_high" ]] && props+=(-p MemoryHigh="$mem_high")
+  systemd-run --user --scope --quiet --collect --unit="$unit" "${props[@]}" \
+    -- env "${env_args[@]}" "$@" || status=$?
+else
+  say "systemd user manager not available — running without a memory cap"
+  env "${env_args[@]}" "$@" || status=$?
+fi
+
+if (( status == 137 )) || (( status == 9 + 128 )); then
+  say "command was killed (exit $status). It may have hit the memory cap MemoryMax=$mem_max."
+fi
+exit "$status"
