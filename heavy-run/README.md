@@ -17,6 +17,7 @@ heavy-run --preview --label fso2 -- env DC_DEPLOYMENT=fso2 PORT=4397 bun src/bin
 heavy-run status                                # מי מחזיק מקום ומי ממתין
 ```
 
+- `--local` — בוחר במפורש את התור של המכונה המקומית.
 - `--preview` / `--no-queue` — בלי מקום בתור. לשרת שרץ לאורך זמן: הוא מקבל תקרה וסביבה נקייה, אבל לא חוסם טסטים. את משתני הפריסה שלו מגדירים במפורש אחרי `env`, כמו בדוגמה.
 - `--keep-env` — לא להסיר את משתני הפריסה.
 - `--mem-max SIZE` (ברירת מחדל `2G`), ‏`--swap-max SIZE` (ברירת מחדל `512M`).
@@ -29,6 +30,8 @@ heavy-run status                                # מי מחזיק מקום ומ�
 ## מה נחשב כבד
 
 סוויטה מלאה (`vitest run` בלי סינון, `bun test` על חבילה), build של production, מדידות ביצועים, בדיקות דפדפן. טסט ממוקד בקובץ אחד לא צריך תור.
+
+להרצת סוויטה או build ב־runner, ראו [remote-test](../remote-test/README.md).
 
 ## התקנה
 
