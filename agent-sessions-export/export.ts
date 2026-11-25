@@ -16,7 +16,7 @@ import { redact, type RedactStats } from "./redact";
 import { readOpencode, opencodeDbPath, opencodeSignature } from "./opencode-store";
 import { indexClaudeJsonl, readJsonlMeta, readJsonlSession } from "./jsonl-meta";
 import { indexCodexSessions, readCodexSession, codexTitles } from "./codex-store";
-import { SessionsDb, schemaProbeReport } from "./db";
+import { acquireWriterLock, SessionsDb, schemaProbeReport } from "./db";
 
 type Route = { match?: string; match_source?: string; repo: string | null; label?: string };
 type Config = {
@@ -83,6 +83,7 @@ const MACHINE = process.argv.find((a) => a.startsWith("--machine="))?.split("=")
 
 // ---------- rebuild-db: בונה את ה-DB מהארכיון הקיים (meta/*.json), בלי cass ----------
 if (REBUILD_DB) {
+  const releaseWriterLock = acquireWriterLock(SESSIONS_DB_PATH);
   const sdb = new SessionsDb(SESSIONS_DB_PATH);
   sdb.fillOnly = true;   // הארכיון ממלא פערים ואינו מצהיר מחדש ערך ישן
   let files = 0, added = 0, bad = 0;
@@ -100,6 +101,7 @@ if (REBUILD_DB) {
     }
   }
   sdb.close();
+  releaseWriterLock();
   console.log(`rebuild-db [${MACHINE}] → ${SESSIONS_DB_PATH}\n  ${files} קבצי-מטא · ${added} הודעות חדשות · ${bad} דילוגים`);
   process.exit(0);
 }
@@ -229,7 +231,8 @@ let skippedRoute = 0, alreadyDone = 0, written = 0, totalBytes = 0;
 const redactStats: RedactStats = {};
 // DB נגזר — מקביל לקבצים. upsert אידמפוטנטי; מאוכלס רק לסשנים שנכתבים
 // בריצה הזו. לאכלוס מהארכיון הקיים: --rebuild-db.
-const sdb = APPLY && WANT_DB ? new SessionsDb(SESSIONS_DB_PATH) : null;
+const releaseWriterLock = APPLY && WANT_DB ? acquireWriterLock(SESSIONS_DB_PATH) : null;
+const sdb = releaseWriterLock ? new SessionsDb(SESSIONS_DB_PATH) : null;
 let dbAdded = 0;
 
 for (const c of convs) {
@@ -628,6 +631,7 @@ if (APPLY) {
     if (st.indexLines.length) appendFileSync(join(base, "index.jsonl"), st.indexLines.join("\n") + "\n");
   }
 }
+releaseWriterLock?.();
 
 // ---------- report ----------
 const mb = (b: number) => (b / 1024 / 1024).toFixed(1) + "MB";

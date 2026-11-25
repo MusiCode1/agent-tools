@@ -5,6 +5,8 @@ import io
 import json
 import os
 from pathlib import Path
+import select
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -16,6 +18,7 @@ import sessions_sync as ss
 
 SCRIPT = Path(__file__).with_name("sessions_sync.py")
 DB_TS = Path(__file__).with_name("db.ts")
+BUN = shutil.which("bun")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS export_state (key TEXT PRIMARY KEY, value TEXT);
@@ -75,6 +78,55 @@ class SessionsSyncTest(unittest.TestCase):
         c = sqlite3.connect(path)
         self.addCleanup(c.close)
         return c
+
+    @unittest.skipUnless(BUN and Path("/usr/bin/flock").is_file(), "Bun and flock are required")
+    def test_writer_lock_matches_bun_through_symlinks(self):
+        for db in (self.a, self.d / "new.db"):
+            with self.subTest(db=db.name):
+                alias = db.with_suffix(".alias")
+                alias.symlink_to(db.name)
+                script = f"""
+import {{ acquireWriterLock }} from {json.dumps(str(DB_TS.resolve()))};
+import {{ readSync }} from "node:fs";
+acquireWriterLock({json.dumps(str(alias))});
+console.log("locked");
+readSync(0, Buffer.alloc(1), 0, 1);
+process.exit(7);
+"""
+                with subprocess.Popen([BUN, "--eval", script], stdin=subprocess.PIPE,
+                                      stdout=subprocess.PIPE) as proc:
+                    try:
+                        self.assertTrue(select.select([proc.stdout], [], [], 30)[0])
+                        self.assertEqual(proc.stdout.readline(), b"locked\n")
+                        native_flock = ss.fcntl.flock
+                        with mock.patch.object(ss.fcntl, "flock", side_effect=lambda file, op:
+                                               native_flock(file, op | ss.fcntl.LOCK_NB)):
+                            with self.assertRaises(BlockingIOError):
+                                with ss.writer_lock(db):
+                                    self.fail("Python acquired the lock while Bun held it")
+                            with ss.writer_lock(self.b):
+                                pass
+                        proc.stdin.close()
+                        self.assertEqual(proc.wait(timeout=30), 7)
+                    finally:
+                        if proc.poll() is None:
+                            proc.kill()
+                            proc.wait(timeout=30)
+                with ss.writer_lock(db):
+                    pass
+
+    def test_import_waits_for_first_record_before_writer_lock(self):
+        out, _ = stream(self.a, "alpha", -1)
+        lock = Path(f"{self.b}.writer.lock")
+
+        def records():
+            self.assertFalse(lock.exists(), "writer lock acquired before input arrived")
+            yield next(out)
+            self.assertTrue(lock.exists())
+            yield from out
+
+        stats = ss.import_stream(self.b, records(), "beta")
+        self.assertEqual(stats["messages_new"], 4)
 
     def test_round_trip_full_fts_and_bytes(self):
         out, st = stream(self.a, "alpha", -1)

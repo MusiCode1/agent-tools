@@ -21,7 +21,7 @@
  * שחזור: ‏zcat dumps/*.sql.gz | sqlite3 new.db
  */
 import { Database } from "bun:sqlite";
-import { SCHEMA, INDEXES } from "./db.ts";
+import { acquireWriterLock, SCHEMA, INDEXES } from "./db.ts";
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -56,6 +56,7 @@ const MAX_MB = Number(flag("max-mb", "90"));
 if (!DIR && !DRY) { console.error("✗ חסר --dir <תיקיית dumps>  (או --dry)"); process.exit(2); }
 if (!existsSync(DB)) { console.error(`✗ אין DB ב-${DB}`); process.exit(1); }
 
+const releaseWriterLock = acquireWriterLock(DB);
 const db = new Database(DB);
 db.exec("CREATE TABLE IF NOT EXISTS export_state (key TEXT PRIMARY KEY, value TEXT)");
 const WM_KEY = "dump_watermark";
@@ -175,6 +176,8 @@ if (DRY || !msgs.length) {
   for (const [i, b] of built.entries())
     console.log(`  ${String(i + 1).padStart(2)}/${built.length}  ${(b.gz.length / 1e6).toFixed(1)}MB ארוז · ${b.n} הודעות`);
   if (!msgs.length) console.log("אין שינוי מאז הדלתא הקודמת — לא נכתב קובץ.");
+  db.close();
+  releaseWriterLock();
   process.exit(0);
 }
 
@@ -191,5 +194,6 @@ for (const [i, b] of built.entries()) {
 db.query("INSERT OR REPLACE INTO export_state(key,value) VALUES($k,$v)")
   .run({ $k: WM_KEY, $v: String(maxWm) });
 db.close();
+releaseWriterLock();
 console.log(outs.join("\n"));
 console.log(`  ${msgs.length} הודעות · ${sess.length} סשנים · ${(gzTot / 1e6).toFixed(2)}MB ארוז · watermark → ${maxWm}`);

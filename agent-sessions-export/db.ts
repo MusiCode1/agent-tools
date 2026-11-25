@@ -19,8 +19,9 @@
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { deflateSync } from "node:zlib";
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { spawnSync } from "node:child_process";
+import { closeSync, lstatSync, mkdirSync, openSync, readlinkSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join } from "node:path";
 
 /** ─── בדיקת-סכמה: גילוי בלבד, ולכן **אופציונלית לחלוטין**. ───
  *  🛑 הייצוא הוא גם הגיבוי. אם `arktype` חסר, פגום, או שה-probe זורק —
@@ -180,6 +181,46 @@ function extractUsage(s: DbSession): string | null {
   const u: Record<string, unknown> = {};
   for (const k of keys) if (s[k] != null) u[k] = s[k];
   return Object.keys(u).length ? JSON.stringify(u) : null;
+}
+
+function canonicalWriterDbPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+
+  // realpath needs an existing file. Resolve the directory for a new DB, and
+  // follow an existing symlink even if its target has not been created yet.
+  const parent = realpathSync(dirname(path));
+  if (lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) {
+    const target = readlinkSync(path);
+    return canonicalWriterDbPath(isAbsolute(target) ? target : parent + "/" + target);
+  }
+  return join(parent, basename(path));
+}
+
+export function acquireWriterLock(dbPath: string): () => void {
+  mkdirSync(dirname(dbPath), { recursive: true });
+  // Match sessions_sync.py. Keep the file so all waiters lock the same inode.
+  const lockPath = canonicalWriterDbPath(dbPath) + ".writer.lock";
+  const fd = openSync(lockPath, "a", 0o600);
+  try {
+    // flock inherits our open file description as fd 3. The lock remains held
+    // by Bun after the helper exits and is released when Bun closes its fd.
+    const result = spawnSync("/usr/bin/flock", ["-x", "3"], {
+      stdio: ["ignore", "ignore", "inherit", fd],
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0) {
+      throw new Error("Cannot acquire SQLite writer lock " + lockPath
+        + " (flock " + (result.signal ?? result.status) + ")");
+    }
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+  return () => closeSync(fd);
 }
 
 export class SessionsDb {

@@ -27,6 +27,7 @@ import contextlib
 import fcntl
 import gzip
 import hashlib
+from itertools import chain
 import json
 import os
 from pathlib import Path
@@ -59,6 +60,16 @@ def load_config():
         raise SyncError(f"no 'machine' in {CONFIG}")
     db = Path(cfg.get("db_path") or "~/.cache/agent-sessions/sessions.db").expanduser()
     return machine, db
+
+
+@contextlib.contextmanager
+def writer_lock(db):
+    # Match db.ts and leave the file in place for other waiters on this inode.
+    lock_path = f"{Path(db).resolve()}.writer.lock"
+    fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
 
 
 def connect(path, write=False):
@@ -144,9 +155,15 @@ def role_variant(local, source):
 
 
 def import_stream(db, stream, own_machine, evidence_dir=None, reserve=RESERVE):
-    with contextlib.closing(connect(db, write=True)) as c:
+    # A pipe from SSH may have no data yet while the connection is starting.
+    # Wait for the first record before acquiring either write lock.
+    records = iter(stream)
+    first = next(records, None)
+    if first is not None:
+        records = chain((first,), records)
+    with writer_lock(db), contextlib.closing(connect(db, write=True)) as c:
         try:
-            return _import(c, db, stream, own_machine, evidence_dir, reserve)
+            return _import(c, db, records, own_machine, evidence_dir, reserve)
         except BaseException:
             if c.in_transaction:
                 c.rollback()   # batches already committed are valid and idempotent
@@ -240,15 +257,14 @@ def _import(c, db, stream, own_machine, evidence_dir, reserve):
 # ---------------------------------------------------------------- cursors + driver
 
 def get_state(db, key):
-    c = connect(db, write=True)
-    c.execute("create table if not exists export_state (key text primary key, value text)")
-    row = c.execute("select value from export_state where key=?", (key,)).fetchone()
-    c.close()
-    return int(row[0]) if row else -1
+    with writer_lock(db), contextlib.closing(connect(db, write=True)) as c:
+        c.execute("create table if not exists export_state (key text primary key, value text)")
+        row = c.execute("select value from export_state where key=?", (key,)).fetchone()
+        return int(row[0]) if row else -1
 
 
 def set_state(db, key, value):
-    with contextlib.closing(connect(db, write=True)) as c:
+    with writer_lock(db), contextlib.closing(connect(db, write=True)) as c:
         _set_state(c, key, value)
 
 
