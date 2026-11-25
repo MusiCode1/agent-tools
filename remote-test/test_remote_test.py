@@ -118,10 +118,18 @@ echo install >> "$HOME/installs"
             self.assertEqual(result.stdout, "committed\nstreamed input\n")
             self.assertTrue(result.stderr.endswith(special), result.stderr)
             push, ssh = result.stderr.splitlines()[:2]
-            self.assertRegex(push, r"^git push --force --no-follow-tags runner [0-9a-f]{40}:refs/heads/rt/[0-9a-f]{24}$")
+            self.assertRegex(push, r"^git push --force --no-follow-tags --no-verify runner [0-9a-f]{40}:refs/heads/rt/[0-9a-f]{24}$")
             self.assertEqual(shlex.split(shlex.split(ssh)[-1])[-7:], ["--", "sh", "-c", script, "sh", special, str(rc)])
         refs = self.git("--git-dir", str(self.mirror), "for-each-ref", "--format=%(refname)").splitlines()
         self.assertEqual(len(refs), 1, refs)
+
+    def test_runner_push_does_not_run_local_pre_push_hook(self):
+        hook = self.repo / ".git/hooks/pre-push"
+        hook.write_text('#!/bin/sh\ntouch "$HOME/pre-push-ran"\nexit 1\n')
+        hook.chmod(0o755)
+        result = self.run_cli("--", "true")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.root / "pre-push-ran").exists())
 
     def test_lockfile_controls_install(self):
         self.commit("bun.lock", "first")

@@ -8,7 +8,7 @@ remote-test --label backend-suite -- bun run test packages/backend
 remote-test status
 ```
 
-הלקוח דורש `HEAD` מקומט ו־worktree נקי, כולל קבצים לא מנוהלים שאינם ignored. הוא מדפיס את פקודות ה־`git push` וה־`ssh` לפני הביצוע, עם quoting שמתאים להדבקה ל־shell. ה־push מכוון לענף `refs/heads/rt/<worktree-id>` נפרד לכל worktree ומציין את ה־SHA שנמדד לפני ה־push. אותו SHA משמש גם ב־SSH.
+הלקוח דורש `HEAD` מקומט ו־worktree נקי, כולל קבצים לא מנוהלים שאינם ignored. הוא מדפיס את פקודות ה־`git push` וה־`ssh` לפני הביצוע, עם quoting שמתאים להדבקה ל־shell. ה־push מכוון לענף `refs/heads/rt/<worktree-id>` נפרד לכל worktree ומציין את ה־SHA שנמדד לפני ה־push. אותו SHA משמש גם ב־SSH. דחיפת הקלט ל־runner משתמשת ב־`--no-verify` כדי למנוע הפעלה מקומית של סוויטות או typecheck דרך ה־`pre-push`. בדחיפות רגילות ה־hooks של Git חלים כרגיל.
 
 ה־runner מדפיס את הנתיב ואת פעולות ה־`git fetch`, ה־`git checkout` ו־`heavy-run --local`. הוא שומר checkout לכל worktree ומתקין תלויות Bun בהכנה הראשונה, אם השתנה ה־lockfile, או כשהתלויות חסרות. הפקודה מקבלת את stdin המקומי. stdout ו־stderr חוזרים תוך כדי הריצה.
 
