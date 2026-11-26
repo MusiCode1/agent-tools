@@ -8,6 +8,7 @@
 #   heavy-run status
 #
 # Options:
+#   --local           use the local queue explicitly
 #   --label NAME      name shown in the queue and in the scope unit (default: first word of the command)
 #   --preview         long-running server: memory cap and clean env, but no queue slot
 #   --no-queue        skip the queue (memory cap and clean env still apply)
@@ -78,6 +79,7 @@ fi
 label="" queue=1 keep_env=0
 while (( $# )); do
   case "$1" in
+    --local) shift ;;
     --label) label="$2"; shift 2 ;;
     --preview|--no-queue) queue=0; shift ;;
     --keep-env) keep_env=1; shift ;;

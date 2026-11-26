@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""Push a clean Git revision and run the requested command over SSH."""
+
+import argparse
+import hashlib
+import os
+import re
+import secrets
+import shlex
+import subprocess
+import sys
+
+SSH = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "heavy-run-runner"]
+RUNNER_URLS = {"heavy-run-runner:drive-coding.git", "ssh://heavy-run-runner/drive-coding.git"}
+
+
+def git_output(*args):
+    return subprocess.check_output(["git", *args]).removesuffix(b"\n")
+
+
+def ssh_run(command, token):
+    # The completion record distinguishes a remote command returning 255 from
+    # the SSH client using the same exit code for a broken connection.
+    prefix = b"\x1eremote-test:" + token.encode("ascii") + b":"
+    trailer = re.compile(re.escape(prefix) + rb"(\d{1,3})\x1f\Z")
+    pending = b""
+    with subprocess.Popen(command, stderr=subprocess.PIPE) as process:
+        while chunk := process.stderr.read1(65536):
+            pending += chunk
+            possible_record = pending.rfind(b"\x1e", max(0, len(pending) - len(prefix) - 4))
+            end = len(pending) if possible_record == -1 else possible_record
+            sys.stderr.buffer.write(pending[:end])
+            sys.stderr.buffer.flush()
+            pending = pending[end:]
+        exit_code = process.wait()
+    match = trailer.fullmatch(pending)
+    if match and int(match[1]) == exit_code:
+        return exit_code
+    sys.stderr.buffer.write(pending)
+    sys.stderr.buffer.flush()
+    print(f"remote-test: SSH or runner setup failed (exit {exit_code}).", file=sys.stderr)
+    return 3
+
+
+def main():
+    if sys.argv[1:] == ["status"]:
+        return 0 if subprocess.call([*SSH, "heavy-run status"]) == 0 else 3
+
+    parser = argparse.ArgumentParser(usage="remote-test [--label L] -- <command…>")
+    parser.add_argument("--label")
+    try:
+        separator = sys.argv.index("--", 1)
+    except ValueError:
+        if sys.argv[1:] in (["--help"], ["-h"]):
+            parser.print_help()
+            return 0
+        parser.error("expected -- before the command")
+    args = parser.parse_args(sys.argv[1:separator])
+    command = sys.argv[separator + 1:]
+    if not command:
+        parser.error("missing command")
+    try:
+        root = os.fsdecode(git_output("rev-parse", "--show-toplevel"))
+        if os.getcwd() != root:
+            parser.error("run from the Git worktree root")
+        if git_output("status", "--porcelain", "--untracked-files=all"):
+            print("יש שינויים לא מקומטים. קמט קודם (קומיט ביניים מותר) והרץ שוב.", file=sys.stderr)
+            return 2
+        git_dir = os.path.realpath(git_output("rev-parse", "--absolute-git-dir"))
+        worktree_id = hashlib.sha256(git_dir).hexdigest()[:24]
+        head = git_output("rev-parse", "--verify", "HEAD^{commit}").decode("ascii")
+    except subprocess.CalledProcessError:
+        return 2
+
+    try:
+        urls = git_output("remote", "get-url", "--push", "--all", "runner").decode().splitlines()
+        if len(urls) != 1 or urls[0] not in RUNNER_URLS:
+            print("remote-test: configure runner as heavy-run-runner:drive-coding.git.", file=sys.stderr)
+            return 3
+        token = secrets.token_hex(16)
+        label = args.label if args.label is not None else command[0]
+        # This push supplies code to the test runner. The project's pre-push
+        # hook runs the full typecheck locally, before the code can reach it.
+        push = [
+            "git", "push", "--force", "--no-follow-tags", "--no-verify",
+            "runner", f"{head}:refs/heads/rt/{worktree_id}",
+        ]
+        remote = shlex.join(["remote-test-run", worktree_id, head, token, "--label", label, "--", *command])
+        ssh = [*SSH, remote]
+        for step in (push, ssh):
+            print(shlex.join(step), file=sys.stderr, flush=True)
+        if subprocess.call(push) != 0:
+            return 3
+        return ssh_run(ssh, token)
+    except (OSError, subprocess.CalledProcessError) as error:
+        print(f"remote-test: {error}", file=sys.stderr)
+        return 3
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except OSError as error:
+        print(f"remote-test: {error}", file=sys.stderr)
+        sys.exit(3)

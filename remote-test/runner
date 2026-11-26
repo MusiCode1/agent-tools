@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""The remote-test operations accepted by the runner's forced SSH command."""
+
+import fcntl
+import hashlib
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+
+STATE = Path.home() / ".cache" / "heavy-run" / "remote-test"
+MIRROR = STATE / "drive-coding.git"
+
+
+def logged(args, *, cwd=None, **kwargs):
+    print(shlex.join(args), file=sys.stderr, flush=True)
+    return subprocess.run(args, cwd=cwd, check=True, **kwargs)
+
+
+def install_dependencies(checkout):
+    # Bun workspaces install from the repository lockfile. Keep the previous
+    # successful fingerprint outside the checkout, including across retries.
+    tracked = subprocess.check_output(
+        ["git", "ls-files", "-z", "--", "bun.lock", "bun.lockb"], cwd=checkout
+    )
+    lockfiles = [checkout / os.fsdecode(name) for name in tracked.split(b"\x00") if name]
+    if not lockfiles:
+        return
+    fingerprint = hashlib.sha256()
+    for lockfile in lockfiles:
+        fingerprint.update(lockfile.name.encode())
+        fingerprint.update(lockfile.read_bytes())
+    current = fingerprint.hexdigest()
+    stamp = checkout.parent / "bun-lock.sha256"
+    if stamp.is_file() and stamp.read_text() == current and (checkout / "node_modules").is_dir():
+        return
+    logged(["bun", "install", "--frozen-lockfile"], cwd=checkout)
+    stamp.write_text(current)
+
+
+def run_command(args):
+    if len(args) < 8 or args[4] != "--label" or args[6] != "--":
+        raise ValueError("invalid remote-test-run arguments")
+    _, worktree_id, head, token, _, label, _, *command = args
+    if not (re.fullmatch(r"[0-9a-f]{24}", worktree_id) and re.fullmatch(r"[0-9a-f]{40}", head)
+            and re.fullmatch(r"[0-9a-f]{32}", token)):
+        raise ValueError("invalid worktree id, revision or completion token")
+
+    slot = STATE / "worktrees" / worktree_id
+    slot.mkdir(parents=True, exist_ok=True)
+    with (slot / "checkout.lock").open("ab") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        checkout = slot / "checkout"
+        checkout.mkdir(exist_ok=True)
+        print(shlex.join(["cd", str(checkout)]), file=sys.stderr, flush=True)
+        if not (checkout / ".git").is_dir():
+            logged(["git", "init", "-q", "--template="], cwd=checkout)
+        logged(["git", "config", "--local", "remote.origin-local.url", str(MIRROR)], cwd=checkout)
+        # Fetch the pinned commit even if the same worktree ref advanced
+        # between the push and SSH. Remove files left by older test runs and
+        # retain ignored build/dependency caches.
+        logged(["git", "fetch", "-q", "origin-local", head], cwd=checkout)
+        logged(["git", "checkout", "-qf", "--detach", head], cwd=checkout)
+        logged(["git", "clean", "-fdq"], cwd=checkout)
+        install_dependencies(checkout)
+        invocation = ["heavy-run", "--local", "--label", label, "--", *command]
+        print(shlex.join(invocation), file=sys.stderr, flush=True)
+        # Keep the checkout protected if the SSH connection drops while
+        # heavy-run or its child is still running.
+        rc = subprocess.call(invocation, cwd=checkout, pass_fds=(lock.fileno(),))
+        rc = rc if rc >= 0 else 128 - rc
+        print(f"\x1eremote-test:{token}:{rc}\x1f", end="", file=sys.stderr, flush=True)
+        return rc
+
+
+def main():
+    try:
+        args = shlex.split(os.environ["SSH_ORIGINAL_COMMAND"])
+        if args in (["git-receive-pack", "drive-coding.git"], ["git-receive-pack", "/drive-coding.git"]):
+            os.execvp("git", ["git", "receive-pack", str(MIRROR)])
+        if args == ["heavy-run", "status"]:
+            os.execvp("heavy-run", ["heavy-run", "status", "--local"])
+        if args[:1] == ["remote-test-run"]:
+            return run_command(args)
+        raise ValueError("unsupported remote-test SSH operation")
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        print(f"remote-test runner: {error}", file=sys.stderr)
+        return 3
+
+
+if __name__ == "__main__":
+    sys.exit(main())
